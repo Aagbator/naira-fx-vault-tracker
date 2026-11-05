@@ -316,7 +316,7 @@ function importBackup(inp) {
 }
 
 /* ---------- views ---------- */
-function top(title, back) {
+function hdr(title, back) {
   return `<header>${back ? '<button class="ghost sm" onclick="nav(\'list\')">‹ Back</button>' : ''}<h1>${esc(title)}</h1><span class="sp"></span>${back ? '' : '<button class="ghost sm" onclick="nav(\'settings\')">Settings</button>'}<button class="ghost sm" onclick="lock()">Lock</button></header>${offline ? '<p class="note">Cannot reach the server. Showing the last saved rates.</p>' : ''}`;
 }
 function listHTML() {
@@ -325,7 +325,7 @@ function listHTML() {
     return `<div class="card tap" onclick="nav('vault','${v.id}')"><div class="row"><b>${esc(v.name)}</b>${r ? badge(statusOf(v, r.your)) : '<span class="mute">No rates yet</span>'}</div>
     <div class="grid" style="margin-top:8px"><div><small>Today's rate</small><b>${r ? '₦' + N(r.your) : '–'}</b></div><div><small>Max safe rate</small><b>₦${N(c.maxSafe)}</b></div><div><small>Room left</small><b>${r ? '₦' + N(c.maxSafe - r.your) : '–'}</b></div><div><small>Loan</small><b>$${N(v.loan, 0)}</b></div></div></div>`;
   }).join('');
-  return top('Vaults') + (cards || '<p class="note">No vaults yet. A vault is one loan with its interest, and the investments you put it into.</p>') + '<button onclick="newVault()" style="width:100%;margin-top:6px">New vault</button>';
+  return hdr('Vaults') + (cards || '<p class="note">No vaults yet. A vault is one loan with its interest, and the investments you put it into.</p>') + '<button onclick="newVault()" style="width:100%;margin-top:6px">New vault</button>';
 }
 function chart(rs, c, v) {
   const W = 320, H = 150, P = 8, ys = rs.flatMap(r => [r.api, r.your]).concat([c.maxSafe, c.maxSafe - v.margin]);
@@ -352,13 +352,13 @@ function vaultHTML(v) {
   const inv = v.investments.map(i => `<div class="card"><div class="row"><b>${esc(i.name)}</b><span><button class="ghost sm" onclick="editInv('${v.id}','${i.id}')">Edit</button> <button class="ghost sm" onclick="delInv('${v.id}','${i.id}')">Remove</button></span></div><p class="mute" style="margin:6px 0 0">₦${N(i.amount, 0)} at ${N(i.gross, 1)}% with ${N(i.tax, 1)}% tax on the gain, ${i.tenor} months. Pays ₦${N(i.amount * (1 + (i.gross / 100) * (1 - i.tax / 100) * (i.tenor / 12)), 0)}.</p></div>`).join('');
   const left = c.conv - c.put;
   const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Market</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td>${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No rates yet. In Settings, enter the server key to load live rates.</p>';
-  return top(v.name, true) + stats + (rs.length ? '<h2>Rate history</h2>' + chart(rs, c, v) : '') +
+  return hdr(v.name, true) + stats + (rs.length ? '<h2>Rate history</h2>' + chart(rs, c, v) : '') +
     `<h2>Investments</h2>${inv || '<p class="note">Add the investments this loan is put into.</p>'}${Math.abs(left) > 1 ? `<p class="mute">${left > 0 ? '₦' + N(left, 0) + ' of the converted loan is not invested yet and counts as earning nothing.' : 'Your investments add up to ₦' + N(-left, 0) + ' more than the converted loan.'}</p>` : ''}<button onclick="addInv('${v.id}')">Add investment</button>` +
     `<h2>Daily history</h2>${table}<h2>Vault</h2><div class="row"><button class="ghost" onclick="editVault('${v.id}')">Edit vault</button><button class="ghost" onclick="delVault('${v.id}')">Delete vault</button></div>`;
 }
 function settingsHTML() {
   const s = state.settings;
-  return top('Settings', true) + `<div class="card"><div class="grid"><div><small>Safety margin (new vaults)${q('margin')}</small><b>₦${N(s.margin)}</b></div><div><small>Default tax on gains</small><b>${N(s.tax, 1)}%</b></div><div><small>Auto-lock</small><b>${s.lockMin} min</b></div><div><small>Server key</small><b>${s.appKey ? 'Set' : 'Not set'}</b></div></div><p><button onclick="editSettings()">Edit settings</button></p></div>
+  return hdr('Settings', true) + `<div class="card"><div class="grid"><div><small>Safety margin (new vaults)${q('margin')}</small><b>₦${N(s.margin)}</b></div><div><small>Default tax on gains</small><b>${N(s.tax, 1)}%</b></div><div><small>Auto-lock</small><b>${s.lockMin} min</b></div><div><small>Server key</small><b>${s.appKey ? 'Set' : 'Not set'}</b></div></div><p><button onclick="editSettings()">Edit settings</button></p></div>
   <h2>Security</h2><div class="col"><button class="ghost" onclick="changePin()">Change PIN</button><button class="ghost" onclick="enableBio()">${store.bio ? 'Reset biometric unlock' : 'Turn on biometric unlock'}</button><button class="ghost" onclick="setRecovery()">${store.wrapAns ? 'Change recovery question' : 'Set recovery question'}</button></div>
   ${store.wrapAns ? '' : '<p class="note" style="margin-top:8px">No recovery question yet. If you forget your PIN, your data cannot be recovered.</p>'}
   <h2>Alerts</h2><div class="col"><button class="ghost" onclick="enablePush()">Turn on push alerts</button><button class="ghost" onclick="testPush()">Send a test alert</button></div>
