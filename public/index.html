@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E7C4A">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<title>Naira Vaults</title>
+<style>
+:root{--bg:#EDF1EE;--card:#fff;--ink:#16231C;--mute:#5B6B62;--line:#D5DDD8;--safe:#0E7C4A;--warn:#A8690A;--loss:#B3261E;--acc:#0E7C4A;--on:#fff;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#0F1713;--card:#18231D;--ink:#E7EFEA;--mute:#98A89F;--line:#2A3A32;--safe:#3DBE86;--warn:#E0A33A;--loss:#F0736B;--acc:#3DBE86;--on:#0F1713}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:640px;margin:0 auto;padding:12px 14px 48px}
+header{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+h1{font-size:22px;margin:0}h2{font-size:17px;margin:20px 0 8px}h3{margin:0 0 8px}
+.sp{flex:1}
+button{font:inherit;border:0;border-radius:10px;padding:10px 14px;background:var(--acc);color:var(--on);cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.sm{padding:6px 10px;font-size:14px}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:10px 0}
+.card.tap{cursor:pointer}
+.row{display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap}
+.mute{color:var(--mute);font-size:14px}
+.big{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}
+.badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:13px;font-weight:600;border:1.5px solid currentColor}
+.safe{color:var(--safe)}.close{color:var(--warn)}.losing{color:var(--loss)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid div small{display:block;color:var(--mute);font-size:13px}
+.grid div b{font-variant-numeric:tabular-nums}
+.q{border:1px solid var(--line);background:transparent;color:var(--mute);border-radius:50%;width:20px;height:20px;padding:0;font-size:12px;margin-left:4px;vertical-align:middle}
+.note{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:8px 12px;color:var(--mute);font-size:14px}
+.chart{width:100%;height:auto;background:var(--card);border:1px solid var(--line);border-radius:12px}
+.chart line{stroke-width:1.5;stroke-dasharray:5 4}.chart .ms{stroke:var(--loss)}.chart .ew{stroke:var(--warn)}
+.chart polyline{fill:none;stroke-width:2.2;stroke-linejoin:round}.chart .la{stroke:var(--mute)}.chart .ly{stroke:var(--safe)}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:14px}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}
+td button{padding:2px 6px;background:transparent;color:var(--ink);border:1px dashed var(--line);border-radius:6px;font-size:14px}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--ink);width:min(92vw,400px);padding:16px}
+dialog::backdrop{background:#0008}
+label{display:block;margin:8px 0;font-size:14px;color:var(--mute)}
+input{width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);margin-top:3px}
+small{color:var(--mute)}.col{display:flex;flex-direction:column;gap:8px}
+.lock{min-height:80vh;display:flex;flex-direction:column;justify-content:center;gap:12px}
+.lock input{font-size:28px;letter-spacing:.5em;text-align:center}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;max-width:90vw;display:none}
+@media(prefers-reduced-motion:no-preference){button{transition:opacity .15s}button:active{opacity:.7}}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<div id="toast" role="status"></div>
+<script>
+'use strict';
+/* ---------- helpers ---------- */
+const $ = s => document.querySelector(s);
+const enc = new TextEncoder(), dec = new TextDecoder();
+const b64 = u => { let s = ''; for (const x of new Uint8Array(u)) s += String.fromCharCode(x); return btoa(s); };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const unb64url = s => unb64(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '='));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const N = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+const addM = (d, m) => { const x = new Date(d + 'T12:00:00'); x.setMonth(x.getMonth() + m); return x.toISOString().slice(0, 10); };
+const toast = m => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = 'none'), 3500); };
+
+/* ---------- encryption ---------- */
+const KEY = 'nv_store', FK = 'nv_fails';
+let store = JSON.parse(localStorage.getItem(KEY) || 'null'), state = null, DK = null, DKraw = null, view = { n: 'list' }, offline = false;
+const saveStore = () => localStorage.setItem(KEY, JSON.stringify(store));
+const importDK = raw => crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+async function kek(secret, salt) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(secret), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function seal(key, bytes) { const iv = crypto.getRandomValues(new Uint8Array(12)); return { iv: b64(iv), ct: b64(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes)) }; }
+async function open(key, o) { return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(o.iv) }, key, unb64(o.ct))); }
+const norm = s => s.trim().toLowerCase().replace(/\s+/g, ' ');
+async function persist() { store.data = await seal(DK, enc.encode(JSON.stringify(state))); saveStore(); sync(); }
+
+async function guarded(fn) {
+  const f = JSON.parse(localStorage.getItem(FK) || '{"n":0,"until":0}');
+  if (Date.now() < f.until) return { err: `Too many tries. Wait ${Math.ceil((f.until - Date.now()) / 1000)} seconds.` };
+  try { const r = await fn(); localStorage.removeItem(FK); return { r }; }
+  catch { f.n++; if (f.n >= 5) f.until = Date.now() + 30000 * 2 ** Math.min(f.n - 5, 8); localStorage.setItem(FK, JSON.stringify(f)); return { err: 'That did not match.' }; }
+}
+
+/* ---------- lock, setup, recovery, biometrics ---------- */
+const idb = () => new Promise((res, rej) => { const r = indexedDB.open('nv', 1); r.onupgradeneeded = () => r.result.createObjectStore('k'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const idbSet = async (k, v) => { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction('k', 'readwrite'); t.objectStore('k').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); };
+const idbGet = async k => { const d = await idb(); return new Promise((res, rej) => { const q = d.transaction('k').objectStore('k').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
+
+let lt, hiddenAt = 0;
+const reset = () => { clearTimeout(lt); if (state) lt = setTimeout(lock, state.settings.lockMin * 60000); };
+['click', 'keydown', 'touchstart', 'scroll'].forEach(e => addEventListener(e, reset, { passive: true }));
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) hiddenAt = Date.now();
+  else if (state && Date.now() - hiddenAt > state.settings.lockMin * 60000) lock();
+});
+function lock() { state = DK = DKraw = null; clearTimeout(lt); lockView(); }
+
+function lockView(mode) {
+  const a = $('#app');
+  const pinBox = '<input id="pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" autocomplete="off" aria-label="4-digit PIN">';
+  if (!store) {
+    a.innerHTML = `<div class="lock"><h1>Naira Vaults</h1><p class="mute">Set a 4-digit PIN. Your data is encrypted on this device with it.</p>${pinBox}<input id="pin2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Repeat PIN" placeholder="repeat"><button onclick="doSetup()">Create PIN</button><p id="err" class="losing"></p></div>`;
+  } else if (mode === 'recover') {
+    a.innerHTML = `<div class="lock" style="font-size:16px"><h1>Recover access</h1><p class="mute">${esc(store.q || '')}</p><label>Your answer<input id="ans" type="text" style="font-size:16px;letter-spacing:0;text-align:left"></label><label>New 4-digit PIN${pinBox}</label><button onclick="doRecover()">Reset PIN</button><button class="ghost" onclick="lockView()">Back</button><p id="err" class="losing"></p></div>`;
+  } else {
+    a.innerHTML = `<div class="lock"><h1>Naira Vaults</h1>${pinBox}<button onclick="doUnlock()">Unlock</button>${store.bio ? '<button class="ghost" onclick="doBio()">Use fingerprint or face</button>' : ''}${store.wrapAns ? '<button class="ghost" onclick="lockView(\'recover\')">Forgot PIN</button>' : ''}<p id="err" class="losing"></p></div>`;
+    if (store.bio) setTimeout(doBio, 200);
+  }
+}
+const showErr = m => ($('#err').textContent = m);
+async function doSetup() {
+  const p = $('#pin').value;
+  if (!/^\d{4}$/.test(p)) return showErr('Use exactly 4 digits.');
+  if (p !== $('#pin2').value) return showErr('The two PINs do not match.');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  DKraw = crypto.getRandomValues(new Uint8Array(32)); DK = await importDK(DKraw);
+  store = { salt: b64(salt), wrapPin: await seal(await kek(p, salt), DKraw) };
+  state = { vaults: [], rates: {}, latest: null, deviceId: crypto.randomUUID(), settings: { margin: 10, tax: 10, lockMin: 5, appKey: '' } };
+  await persist(); started();
+}
+async function doUnlock() {
+  const p = $('#pin').value; showErr('');
+  const { r, err } = await guarded(async () => open(await kek(p, unb64(store.salt)), store.wrapPin));
+  if (err) return showErr(err.replace('That did not match.', 'Wrong PIN.'));
+  await finish(r);
+}
+async function doRecover() {
+  const p = $('#pin').value; showErr('');
+  if (!/^\d{4}$/.test(p)) return showErr('Use exactly 4 digits for the new PIN.');
+  const a = $('#ans').value;
+  const { r, err } = await guarded(async () => open(await kek(norm(a), unb64(store.ansSalt)), store.wrapAns));
+  if (err) return showErr(err.replace('That did not match.', 'That answer does not match.'));
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  store.salt = b64(salt); store.wrapPin = await seal(await kek(p, salt), r); saveStore();
+  await finish(r);
+}
+async function doBio() {
+  try {
+    await navigator.credentials.get({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), allowCredentials: [{ type: 'public-key', id: unb64(store.bio.id) }], userVerification: 'required', timeout: 60000 } });
+    await finish(await open(await idbGet('dk'), store.bio));
+  } catch { /* cancelled: PIN still works */ }
+}
+async function finish(raw) {
+  DKraw = raw; DK = await importDK(raw);
+  state = JSON.parse(dec.decode(await open(DK, store.data)));
+  started();
+}
+function started() { view = { n: 'list' }; reset(); render(); refresh(); }
+async function enableBio() {
+  try {
+    const cred = await navigator.credentials.create({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), rp: { name: 'Naira Vaults' }, user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'owner', displayName: 'Owner' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' }, timeout: 60000 } });
+    const dk = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    await idbSet('dk', dk);
+    store.bio = { id: b64(cred.rawId), ...(await seal(dk, DKraw)) }; saveStore();
+    toast('Biometric unlock is on.'); render();
+  } catch { toast('Could not turn on biometrics on this device.'); }
+}
+async function changePin() {
+  const o = await ask('Change PIN', [{ k: 'p', label: 'New 4-digit PIN', type: 'password' }]);
+  if (!o) return;
+  if (!/^\d{4}$/.test(o.p)) return toast('Use exactly 4 digits.');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  store.salt = b64(salt); store.wrapPin = await seal(await kek(o.p, salt), DKraw); saveStore(); toast('PIN changed.');
+}
+async function setRecovery() {
+  const o = await ask('Recovery question', [{ k: 'q', label: 'Question only you can answer', type: 'text', value: store.q }, { k: 'a', label: 'Answer (use a long phrase)', type: 'text' }], 'Save');
+  if (!o || !o.q || !o.a) return;
+  if (norm(o.a).length < 8) return toast('Make the answer longer: at least 8 characters.');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  store.q = o.q; store.ansSalt = b64(salt); store.wrapAns = await seal(await kek(norm(o.a), salt), DKraw); saveStore();
+  toast('Recovery question saved.'); render();
+}
+
+/* ---------- dialogs ---------- */
+function ask(title, fields, okText = 'Save') {
+  return new Promise(res => {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type || 'number'}" step="any" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row"><button value="x" class="ghost">Cancel</button><button value="ok">${okText}</button></div></form>`;
+    d.onclose = () => { const ok = d.returnValue === 'ok', o = {}; if (ok) fields.forEach(f => { const v = d.querySelector(`[name=${f.k}]`).value; o[f.k] = (f.type || 'number') === 'number' ? Number(v) : v; }); d.remove(); res(ok ? o : null); };
+    document.body.appendChild(d); d.showModal();
+  });
+}
+function pick(title, msg, opts) {
+  return new Promise(res => {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3><p>${esc(msg)}</p><div class="col">${opts.map((o, i) => `<button value="${i}" class="${i ? 'ghost' : ''}">${esc(o)}</button>`).join('')}</div></form>`;
+    d.onclose = () => { const r = d.returnValue; d.remove(); res(r === '' ? -1 : Number(r)); };
+    document.body.appendChild(d); d.showModal();
+  });
+}
+const HELP = {
+  maxSafe: ['Max safe rate', "The highest dollar rate at which you still don't lose money. If the dollar goes above this, you start losing money."],
+  early: ['Early warning rate', 'Max safe rate minus your safety margin. You get warned once your rate reaches it.'],
+  room: ['Room left', 'How many naira your rate can still rise before it reaches the Max safe rate.'],
+  gap: ['Rate gap', 'The difference between the rate you got and the market rate on day one. Your rate each day is the market rate plus this gap.'],
+  margin: ['Safety margin', 'A cushion in naira, so you are warned before you reach the Max safe rate.'],
+};
+const help = k => pick(HELP[k][0], HELP[k][1], ['Got it']);
+const q = k => `<button class="q" onclick="event.stopPropagation();help('${k}')" aria-label="What is ${HELP[k][0]}?">?</button>`;
+
+/* ---------- maths ---------- */
+function calc(v) {
+  const conv = v.loan * v.entryRate, put = v.investments.reduce((s, i) => s + i.amount, 0);
+  const end = v.investments.reduce((s, i) => s + i.amount * (1 + (i.gross / 100) * (1 - i.tax / 100) * (i.tenor / 12)), 0) + Math.max(0, conv - put);
+  const repay = v.loan * (1 + (v.loanRate / 100) * (v.term / 12));
+  return { conv, put, end, repay, maxSafe: end / repay };
+}
+const gapFor = (v, d) => { let g = v.gapLog[0].gap; for (const e of v.gapLog) if (e.from <= d) g = e.gap; return g; };
+const rows = v => Object.keys(state.rates).sort().filter(d => d >= v.start).map(d => { const api = state.rates[d], gap = gapFor(v, d), e = v.edits[d]; return { d, api, gap, your: e ?? api + gap, edited: e != null }; });
+const statusOf = (v, your) => { const m = calc(v).maxSafe; return your >= m ? 'losing' : your >= m - v.margin ? 'close' : 'safe'; };
+const BADGE = { safe: 'Safe', close: 'Getting close', losing: 'Losing' };
+const badge = s => `<span class="badge ${s}">${BADGE[s]}</span>`;
+
+/* ---------- server ---------- */
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: { 'x-app-key': state.settings.appKey, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) throw new Error(r.status === 401 ? 'Wrong server key' : 'Server error');
+  return r.json();
+}
+async function refresh() {
+  if (!state || !state.settings.appKey) return;
+  try { const [l, h] = await Promise.all([api('/api/rate'), api('/api/rates')]); Object.assign(state.rates, h); state.latest = l; offline = false; await persist(); }
+  catch { offline = true; }
+  if (state) render();
+}
+setInterval(() => state && refresh(), 300000);
+let st; const sync = () => { clearTimeout(st); st = setTimeout(syncWatches, 1500); };
+async function syncWatches() {
+  if (!state || !state.settings.appKey) return;
+  try {
+    await api('/api/watches', { deviceId: state.deviceId, watches: state.vaults.map(v => ({ id: v.id, name: v.name, maxSafe: calc(v).maxSafe, margin: v.margin, gap: gapFor(v, today()), dates: [...v.investments.map(i => ({ label: `${i.name} matures`, date: addM(v.start, i.tenor) })), { label: 'Loan repayment', date: addM(v.start, v.term) }] })) });
+  } catch {}
+}
+async function enablePush() {
+  if (!state.settings.appKey) return toast('Enter the server key first (Edit settings).');
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return toast('Push is not available here. On iPhone, add the app to your Home Screen first.');
+  try {
+    if ((await Notification.requestPermission()) !== 'granted') return toast('Notifications are blocked for this site.');
+    const reg = await navigator.serviceWorker.ready, { key } = await api('/api/vapid');
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: unb64url(key) });
+    await api('/api/subscribe', { deviceId: state.deviceId, subscription: sub.toJSON() });
+    await syncWatches(); toast('Push alerts are on.');
+  } catch (e) { toast('Could not turn on push: ' + e.message); }
+}
+async function testPush() { try { await api('/api/test', { deviceId: state.deviceId }); toast('Test alert sent.'); } catch (e) { toast(e.message); } }
+
+/* ---------- actions ---------- */
+function nav(n, id) { view = { n, id }; render(); scrollTo(0, 0); }
+async function newVault() {
+  const o = await ask('New vault', [
+    { k: 'name', label: 'Name', type: 'text', value: 'Vault ' + (state.vaults.length + 1) },
+    { k: 'loan', label: 'Loan amount (USD)' }, { k: 'loanRate', label: 'Loan interest (% per year)', value: 10 },
+    { k: 'term', label: 'Loan term (months)', value: 12 }, { k: 'start', label: 'Start date', type: 'date', value: today() },
+    { k: 'entryRate', label: 'Rate you got when converting (₦ per $1)' }], 'Create');
+  if (!o || !(o.loan > 0) || !(o.entryRate > 0)) return;
+  let apiNow = state.latest?.rate;
+  if (!apiNow) { toast('No market rate yet, so the rate gap starts at ₦0.'); apiNow = o.entryRate; }
+  const v = { id: crypto.randomUUID(), name: o.name, loan: o.loan, loanRate: o.loanRate, term: o.term, start: o.start, entryRate: o.entryRate, apiAtSetup: apiNow, margin: state.settings.margin, gapLog: [{ from: o.start, gap: o.entryRate - apiNow }], edits: {}, investments: [] };
+  state.vaults.push(v); await persist(); nav('vault', v.id);
+}
+async function editVault(id) {
+  const v = state.vaults.find(x => x.id === id);
+  const o = await ask('Edit vault', [{ k: 'name', label: 'Name', type: 'text', value: v.name }, { k: 'loan', label: 'Loan amount (USD)', value: v.loan }, { k: 'loanRate', label: 'Loan interest (% per year)', value: v.loanRate }, { k: 'term', label: 'Loan term (months)', value: v.term }, { k: 'margin', label: 'Safety margin (₦)', value: v.margin }]);
+  if (!o) return; Object.assign(v, o); await persist(); render();
+}
+async function delVault(id) {
+  if ((await pick('Delete this vault?', 'Its investments and history are removed. This cannot be undone.', ['Delete vault', 'Cancel'])) !== 0) return;
+  state.vaults = state.vaults.filter(x => x.id !== id); await persist(); nav('list');
+}
+const invFields = i => [{ k: 'name', label: 'Name', type: 'text', value: i.name }, { k: 'amount', label: 'Amount (₦)', value: i.amount }, { k: 'gross', label: 'Return before tax (% per year)', value: i.gross }, { k: 'tax', label: 'Tax on the gain (%)', value: i.tax }, { k: 'tenor', label: 'Tenor (months)', value: i.tenor }];
+async function addInv(id) {
+  const v = state.vaults.find(x => x.id === id), c = calc(v);
+  const o = await ask('Add investment', invFields({ name: '', amount: Math.max(0, Math.round(c.conv - c.put)), gross: 20, tax: state.settings.tax, tenor: v.term }), 'Add');
+  if (!o || !o.name || !(o.amount > 0)) return;
+  v.investments.push({ id: crypto.randomUUID(), ...o }); await persist(); render();
+}
+async function editInv(id, iid) {
+  const v = state.vaults.find(x => x.id === id), i = v.investments.find(x => x.id === iid);
+  const o = await ask('Edit investment', invFields(i)); if (!o) return;
+  Object.assign(i, o); await persist(); render();
+}
+async function delInv(id, iid) {
+  const v = state.vaults.find(x => x.id === id); v.investments = v.investments.filter(x => x.id !== iid); await persist(); render();
+}
+async function editRate(id, d) {
+  const v = state.vaults.find(x => x.id === id), r = rows(v).find(x => x.d === d);
+  const o = await ask('Your rate on ' + d, [{ k: 'val', label: `Your rate (₦ per $1). Market rate that day: ${N(r.api)}`, value: r.your }]);
+  if (!o || !(o.val > 0)) return;
+  const opts = ['This day only', 'This day and onwards', 'Cancel']; if (r.edited) opts.splice(2, 0, 'Reset to automatic');
+  const c = await pick('Apply the new rate', `Your rate ${N(o.val)} means a gap of ₦${N(o.val - r.api)} from the market rate.`, opts);
+  if (c === 0) v.edits[d] = o.val;
+  else if (c === 1) { delete v.edits[d]; v.gapLog = v.gapLog.filter(e => e.from < d); v.gapLog.push({ from: d, gap: o.val - r.api }); }
+  else if (r.edited && c === 2) delete v.edits[d];
+  else return;
+  await persist(); render();
+}
+async function editSettings() {
+  const s = state.settings;
+  const o = await ask('Settings', [{ k: 'margin', label: 'Safety margin for new vaults (₦)', value: s.margin }, { k: 'tax', label: 'Default tax on gains (%)', value: s.tax }, { k: 'lockMin', label: 'Auto-lock after (minutes)', value: s.lockMin }, { k: 'appKey', label: 'Server key', type: 'text', value: s.appKey }]);
+  if (!o) return; o.lockMin = Math.min(60, Math.max(1, Math.round(o.lockMin) || 5)); Object.assign(s, o);
+  await persist(); reset(); refresh(); render();
+}
+function exportBackup() {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(store)], { type: 'application/json' }));
+  a.download = 'naira-vaults-backup.json'; a.click();
+}
+function importBackup(inp) {
+  const f = inp.files[0]; if (!f) return;
+  f.text().then(t => { const j = JSON.parse(t); if (!j.wrapPin || !j.data) throw 0; localStorage.setItem(KEY, t); location.reload(); }).catch(() => toast('That is not a valid backup file.'));
+}
+
+/* ---------- views ---------- */
+function top(title, back) {
+  return `<header>${back ? '<button class="ghost sm" onclick="nav(\'list\')">‹ Back</button>' : ''}<h1>${esc(title)}</h1><span class="sp"></span>${back ? '' : '<button class="ghost sm" onclick="nav(\'settings\')">Settings</button>'}<button class="ghost sm" onclick="lock()">Lock</button></header>${offline ? '<p class="note">Cannot reach the server. Showing the last saved rates.</p>' : ''}`;
+}
+function listHTML() {
+  const cards = state.vaults.map(v => {
+    const c = calc(v), r = rows(v).at(-1);
+    return `<div class="card tap" onclick="nav('vault','${v.id}')"><div class="row"><b>${esc(v.name)}</b>${r ? badge(statusOf(v, r.your)) : '<span class="mute">No rates yet</span>'}</div>
+    <div class="grid" style="margin-top:8px"><div><small>Today's rate</small><b>${r ? '₦' + N(r.your) : '–'}</b></div><div><small>Max safe rate</small><b>₦${N(c.maxSafe)}</b></div><div><small>Room left</small><b>${r ? '₦' + N(c.maxSafe - r.your) : '–'}</b></div><div><small>Loan</small><b>$${N(v.loan, 0)}</b></div></div></div>`;
+  }).join('');
+  return top('Vaults') + (cards || '<p class="note">No vaults yet. A vault is one loan with its interest, and the investments you put it into.</p>') + '<button onclick="newVault()" style="width:100%;margin-top:6px">New vault</button>';
+}
+function chart(rs, c, v) {
+  const W = 320, H = 150, P = 8, ys = rs.flatMap(r => [r.api, r.your]).concat([c.maxSafe, c.maxSafe - v.margin]);
+  const lo = Math.min(...ys) - 2, hi = Math.max(...ys) + 2;
+  const x = i => (rs.length < 2 ? W / 2 : P + (i * (W - 2 * P)) / (rs.length - 1)), y = n => H - P - ((n - lo) / (hi - lo)) * (H - 2 * P);
+  const pl = k => rs.map((r, i) => `${x(i).toFixed(1)},${y(r[k]).toFixed(1)}`).join(' ');
+  const hl = (n, cls) => `<line class="${cls}" x1="0" x2="${W}" y1="${y(n).toFixed(1)}" y2="${y(n).toFixed(1)}"/>`;
+  const dot = (k, cls) => (rs.length === 1 ? `<circle cx="${W / 2}" cy="${y(rs[0][k]).toFixed(1)}" r="3.5" fill="var(--${cls === 'ly' ? 'safe' : 'mute'})"/>` : '');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Market rate and your rate against the Max safe rate">${hl(c.maxSafe, 'ms')}${hl(c.maxSafe - v.margin, 'ew')}<polyline class="la" points="${pl('api')}"/><polyline class="ly" points="${pl('your')}"/>${dot('api', 'la')}${dot('your', 'ly')}</svg><p class="mute">Grey: market rate. Green: your rate. Red dashes: Max safe rate. Amber dashes: Early warning rate.</p>`;
+}
+function vaultHTML(v) {
+  const c = calc(v), rs = rows(v), r = rs.at(-1), gap = gapFor(v, today());
+  const back = r ? c.end / r.your : null;
+  const stats = `<div class="card"><div class="row"><div><small class="mute">Today's rate (yours)</small><div class="big">${r ? '₦' + N(r.your) : '–'}</div></div>${r ? badge(statusOf(v, r.your)) : ''}</div>
+  <div class="grid" style="margin-top:10px">
+  <div><small>Max safe rate${q('maxSafe')}</small><b>₦${N(c.maxSafe)}</b></div>
+  <div><small>Early warning rate${q('early')}</small><b>₦${N(c.maxSafe - v.margin)}</b></div>
+  <div><small>Room left${q('room')}</small><b>${r ? '₦' + N(c.maxSafe - r.your) : '–'}</b></div>
+  <div><small>Rate gap${q('gap')}</small><b>₦${N(gap)}</b></div>
+  <div><small>Converted</small><b>₦${N(c.conv, 0)}</b></div>
+  <div><small>Repay by ${addM(v.start, v.term)}</small><b>$${N(c.repay)}</b></div>
+  <div><small>Naira at the end</small><b>₦${N(c.end, 0)}</b></div>
+  <div><small>If repaid at today's rate</small><b class="${back >= c.repay ? 'safe' : 'losing'}">${back ? (back >= c.repay ? '+' : '−') + '$' + N(Math.abs(back - c.repay)) : '–'}</b></div></div></div>`;
+  const inv = v.investments.map(i => `<div class="card"><div class="row"><b>${esc(i.name)}</b><span><button class="ghost sm" onclick="editInv('${v.id}','${i.id}')">Edit</button> <button class="ghost sm" onclick="delInv('${v.id}','${i.id}')">Remove</button></span></div><p class="mute" style="margin:6px 0 0">₦${N(i.amount, 0)} at ${N(i.gross, 1)}% with ${N(i.tax, 1)}% tax on the gain, ${i.tenor} months. Pays ₦${N(i.amount * (1 + (i.gross / 100) * (1 - i.tax / 100) * (i.tenor / 12)), 0)}.</p></div>`).join('');
+  const left = c.conv - c.put;
+  const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Market</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td>${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No rates yet. In Settings, enter the server key to load live rates.</p>';
+  return top(v.name, true) + stats + (rs.length ? '<h2>Rate history</h2>' + chart(rs, c, v) : '') +
+    `<h2>Investments</h2>${inv || '<p class="note">Add the investments this loan is put into.</p>'}${Math.abs(left) > 1 ? `<p class="mute">${left > 0 ? '₦' + N(left, 0) + ' of the converted loan is not invested yet and counts as earning nothing.' : 'Your investments add up to ₦' + N(-left, 0) + ' more than the converted loan.'}</p>` : ''}<button onclick="addInv('${v.id}')">Add investment</button>` +
+    `<h2>Daily history</h2>${table}<h2>Vault</h2><div class="row"><button class="ghost" onclick="editVault('${v.id}')">Edit vault</button><button class="ghost" onclick="delVault('${v.id}')">Delete vault</button></div>`;
+}
+function settingsHTML() {
+  const s = state.settings;
+  return top('Settings', true) + `<div class="card"><div class="grid"><div><small>Safety margin (new vaults)${q('margin')}</small><b>₦${N(s.margin)}</b></div><div><small>Default tax on gains</small><b>${N(s.tax, 1)}%</b></div><div><small>Auto-lock</small><b>${s.lockMin} min</b></div><div><small>Server key</small><b>${s.appKey ? 'Set' : 'Not set'}</b></div></div><p><button onclick="editSettings()">Edit settings</button></p></div>
+  <h2>Security</h2><div class="col"><button class="ghost" onclick="changePin()">Change PIN</button><button class="ghost" onclick="enableBio()">${store.bio ? 'Reset biometric unlock' : 'Turn on biometric unlock'}</button><button class="ghost" onclick="setRecovery()">${store.wrapAns ? 'Change recovery question' : 'Set recovery question'}</button></div>
+  ${store.wrapAns ? '' : '<p class="note" style="margin-top:8px">No recovery question yet. If you forget your PIN, your data cannot be recovered.</p>'}
+  <h2>Alerts</h2><div class="col"><button class="ghost" onclick="enablePush()">Turn on push alerts</button><button class="ghost" onclick="testPush()">Send a test alert</button></div>
+  <h2>Backup</h2><div class="col"><button class="ghost" onclick="exportBackup()">Download encrypted backup</button><label class="ghost" style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;color:var(--ink);margin:0">Restore a backup<input type="file" accept=".json" onchange="importBackup(this)" style="display:none"></label></div>
+  <p class="mute">Backups stay encrypted. You need your PIN or recovery answer to open one.</p>`;
+}
+function render() {
+  const a = $('#app');
+  if (view.n === 'settings') a.innerHTML = settingsHTML();
+  else if (view.n === 'vault' && state.vaults.some(v => v.id === view.id)) a.innerHTML = vaultHTML(state.vaults.find(v => v.id === view.id));
+  else { view = { n: 'list' }; a.innerHTML = listHTML(); }
+}
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+lockView();
+</script>
+</body>
+</html>
