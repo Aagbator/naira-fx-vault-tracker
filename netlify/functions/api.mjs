@@ -14,7 +14,7 @@ export default async (req) => {
       case 'GET /rates': return json(await read('rates', {}));
       case 'POST /subscribe': { const s = await read('subs', {}); s[body.deviceId] = body.subscription; await write('subs', s); return json({ ok: 1 }); }
       case 'POST /watches': { const w = await read('watches', {}); w[body.deviceId] = body.watches; await write('watches', w); return json({ ok: 1 }); }
-      case 'POST /test': { const s = await read('subs', {}); await notify(s, body.deviceId, { title: 'Test alert', body: 'Push alerts are working.' }); return json({ ok: 1 }); }
+      case 'POST /test': { const s = await read('subs', {}); const r = await notify(s, body.deviceId, { title: 'Test alert', body: 'Push alerts are working.' }); if (r.gone) await write('subs', s); return json(r); }
       default: return json({ error: 'Not found' }, 404);
     }
   } catch (e) { return json({ error: e.message }, 500); }

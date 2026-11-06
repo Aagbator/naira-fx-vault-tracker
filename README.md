@@ -28,3 +28,4 @@ Dragging the folder into Netlify's drop zone will not install the function packa
 - History starts the day the first rate is saved. Older days are not back-filled.
 - Your loan figures are encrypted on your device. The server only keeps each vault's name, Max safe rate, safety margin, rate gap, due dates and your push subscription.
 - iPhone: open the site in Safari, Share > Add to Home Screen, then turn on push from the installed app.
+- Monthly repayment vaults: open the app after each repayment date so the server's alerts use the updated Max safe rate (it is recalculated each time the app syncs).

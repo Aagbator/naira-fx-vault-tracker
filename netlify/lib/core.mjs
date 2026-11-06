@@ -17,17 +17,20 @@ function setup() {
 
 export async function notify(subs, deviceId, payload) {
   const sub = subs[deviceId];
-  if (!sub) return false;
-  setup();
-  try { await webpush.sendNotification(sub, JSON.stringify(payload)); }
-  catch (e) { if (e.statusCode === 404 || e.statusCode === 410) { delete subs[deviceId]; return true; } }
-  return false;
+  if (!sub) return { ok: false, reason: 'no-subscription' };
+  try { setup(); await webpush.sendNotification(sub, JSON.stringify(payload)); return { ok: true }; }
+  catch (e) {
+    const gone = e.statusCode === 404 || e.statusCode === 410;
+    if (gone) delete subs[deviceId];
+    console.error('Push failed:', e.statusCode, e.body || e.message);
+    return { ok: false, gone, status: e.statusCode, reason: gone ? 'subscription-expired' : 'push-failed', detail: String(e.body || e.message || e).slice(0, 160) };
+  }
 }
 
 async function check(api) {
   const [subs, watches, status, sent] = await Promise.all([read('subs', {}), read('watches', {}), read('status', {}), read('sent', {})]);
   let subsChanged = false;
-  const send = async (dev, p) => { if (await notify(subs, dev, p)) subsChanged = true; };
+  const send = async (dev, p) => { const r = await notify(subs, dev, p); if (r.gone) subsChanged = true; };
   for (const [dev, list] of Object.entries(watches)) {
     for (const w of list) {
       const your = api + (w.gap || 0), st = statusOf(w, your), key = `${dev}:${w.id}`;
