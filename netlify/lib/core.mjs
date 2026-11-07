@@ -4,6 +4,7 @@ import webpush from 'web-push';
 const store = () => getStore('naira-vaults');
 export const read = async (k, d) => (await store().get(k, { type: 'json' })) ?? d;
 export const write = (k, v) => store().setJSON(k, v);
+export const del = k => store().delete(k);
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
 const LABEL = { safe: 'Safe', close: 'Getting close', losing: 'Losing' };
 const statusOf = (w, your) => (your >= w.maxSafe ? 'losing' : your >= w.maxSafe - w.margin ? 'close' : 'safe');
@@ -52,6 +53,26 @@ async function check(api) {
   }
   await Promise.all([write('status', status), write('sent', sent), subsChanged ? write('subs', subs) : null]);
 }
+
+export async function pullParallel() {
+  const key = process.env.MONIERATE_KEY;
+  if (!key) throw new Error('MONIERATE_KEY is not set');
+  const r = await fetch('https://api.monierate.com/core/rates/latest.json?base=USD&market=parallel', { headers: { api_key: key } });
+  if (!r.ok) throw new Error('Monierate returned ' + r.status);
+  const j = await r.json();
+  const rate = Number(j && j.data && j.data.rates && j.data.rates.NGN);
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error('No NGN rate in the response');
+  const mkt = await read('latest', null);
+  if (mkt && (rate < mkt.rate * 0.7 || rate > mkt.rate * 1.5)) throw new Error(`Rate ${rate} looks wrong next to the market rate ${mkt.rate}`);
+  const days = await read('parallel', {});
+  days[today()] = rate;
+  for (const k of Object.keys(days).sort().slice(0, -60)) delete days[k];
+  const latest = { rate, at: new Date().toISOString() };
+  await Promise.all([write('parallel', days), write('parallelLatest', latest), del('parallelError')]);
+  return latest;
+}
+
+export const parallelFailed = e => write('parallelError', { at: new Date().toISOString(), reason: String((e && e.message) || e).slice(0, 160) });
 
 export async function pullRate() {
   const r = await fetch(process.env.RATE_URL || 'https://open.er-api.com/v6/latest/USD');

@@ -43,6 +43,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .hero .badge{color:#fff;background:rgba(255,255,255,.16)}
 .hero .badge.safe::before{background:#5CE6AB}.hero .badge.close::before{background:#FFC857}.hero .badge.losing::before{background:#FF8A94}
 .safe{color:var(--safe)}.close{color:var(--warn)}.losing{color:var(--loss)}
+.hero .safe{color:#7CF0B8}.hero .losing{color:#FFA1AA}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px}
 .grid div small{display:block;color:var(--mute);font-size:12.5px}
 .grid div b{font-variant-numeric:tabular-nums;font-size:16px}
@@ -103,7 +104,12 @@ async function kek(secret, salt) {
 async function seal(key, bytes) { const iv = crypto.getRandomValues(new Uint8Array(12)); return { iv: b64(iv), ct: b64(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes)) }; }
 async function open(key, o) { return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(o.iv) }, key, unb64(o.ct))); }
 const norm = s => s.trim().toLowerCase().replace(/\s+/g, ' ');
-async function persist() { store.data = await seal(DK, enc.encode(JSON.stringify(state))); saveStore(); sync(); }
+async function save() { store.data = await seal(DK, enc.encode(JSON.stringify(state))); saveStore(); }
+async function persist() {
+  await save();
+  if (store.sync && store.sync.on) { store.sync.dirty = true; saveStore(); pushSoon(); }
+  sync();
+}
 
 async function guarded(fn) {
   const f = JSON.parse(localStorage.getItem(FK) || '{"n":0,"until":0}');
@@ -123,7 +129,7 @@ const reset = () => { clearTimeout(lt); if (state) lt = setTimeout(lock, state.s
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) hiddenAt = Date.now();
   else if (state && Date.now() - hiddenAt > state.settings.lockMin * 60000) lock();
-  else if (state) refresh();
+  else if (state) { refresh(); syncNow(); }
 });
 function lock() { state = DK = DKraw = null; clearTimeout(lt); lockView(); }
 
@@ -131,7 +137,7 @@ function lockView(mode) {
   const a = $('#app');
   const pinBox = '<input id="pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" autocomplete="off" aria-label="4-digit PIN">';
   if (!store) {
-    a.innerHTML = `<div class="lock"><h1>Naira Vaults</h1><p class="mute">Set a 4-digit PIN. Your data is encrypted on this device with it.</p>${pinBox}<input id="pin2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Repeat PIN" placeholder="repeat"><button onclick="doSetup()">Create PIN</button><p id="err" class="losing"></p></div>`;
+    a.innerHTML = `<div class="lock"><h1>Naira Vaults</h1><p class="mute">Set a 4-digit PIN. Your data is encrypted on this device with it.</p>${pinBox}<input id="pin2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Repeat PIN" placeholder="repeat"><button onclick="doSetup()">Create PIN</button><button class="ghost" onclick="joinView()">Sync from another device</button><p id="err" class="losing"></p></div>`;
   } else if (mode === 'recover') {
     a.innerHTML = `<div class="lock" style="font-size:16px"><h1>Recover access</h1><p class="mute">${esc(store.q || '')}</p><label>Your answer<input id="ans" type="text" style="font-size:16px;letter-spacing:0;text-align:left"></label><label>New 4-digit PIN${pinBox}</label><button onclick="doRecover()">Reset PIN</button><button class="ghost" onclick="lockView()">Back</button><p id="err" class="losing"></p></div>`;
   } else {
@@ -177,7 +183,7 @@ async function finish(raw) {
   state = JSON.parse(dec.decode(await open(DK, store.data)));
   started();
 }
-function started() { view = { n: 'list' }; reset(); render(); refresh(); }
+function started() { view = { n: 'list' }; reset(); render(); refresh(); syncNow(); }
 async function enableBio() {
   try {
     const cred = await navigator.credentials.create({ publicKey: { challenge: crypto.getRandomValues(new Uint8Array(32)), rp: { name: 'Naira Vaults' }, user: { id: crypto.getRandomValues(new Uint8Array(16)), name: 'owner', displayName: 'Owner' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' }, timeout: 60000 } });
@@ -207,7 +213,7 @@ async function setRecovery() {
 function ask(title, fields, okText = 'Save') {
   return new Promise(res => {
     const d = document.createElement('dialog');
-    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type || 'number'}" step="any" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row"><button value="x" class="ghost">Cancel</button><button value="ok">${okText}</button></div></form>`;
+    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type === 'secret' ? 'password' : f.type || 'number'}" step="any" autocomplete="off" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row"><button value="x" class="ghost">Cancel</button><button value="ok">${okText}</button></div></form>`;
     d.onclose = () => { const ok = d.returnValue === 'ok', o = {}; if (ok) fields.forEach(f => { const v = d.querySelector(`[name=${f.k}]`).value; o[f.k] = (f.type || 'number') === 'number' ? Number(v) : v; }); d.remove(); res(ok ? o : null); };
     document.body.appendChild(d); d.showModal();
   });
@@ -258,21 +264,28 @@ const gapFor = (v, d) => { let g = v.gapLog[0].gap; for (const e of v.gapLog) if
 const rows = v => Object.keys(state.rates).sort().filter(d => d >= v.start).map(d => { const api = state.rates[d], gap = gapFor(v, d), e = v.edits[d]; return { d, api, gap, your: e ?? api + gap, edited: e != null }; });
 const statusOf = (v, your) => { const c = calc(v), m = c.maxSafe, x = c.done && c.avgPaid ? c.avgPaid : your; return x >= m ? 'losing' : x >= m - v.margin ? 'close' : 'safe'; };
 const BADGE = { safe: 'Safe', close: 'Getting close', losing: 'Losing' };
+const sgn = n => (n > 0 ? 'safe' : n < 0 ? 'losing' : '');
 const badge = s => `<span class="badge ${s}">${BADGE[s]}</span>`;
 
 /* ---------- server ---------- */
-async function api(path, body) {
-  const r = await fetch(path, { method: body ? 'POST' : 'GET', headers: { 'x-app-key': state.settings.appKey, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+async function api(path, body, method) {
+  const r = await fetch(path, { method: method || (body ? 'POST' : 'GET'), headers: { 'x-app-key': state.settings.appKey, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 409) return { conflict: true, ...(await r.json()) };
   if (!r.ok) throw new Error(r.status === 401 ? 'Wrong server key' : 'Server error');
   return r.json();
 }
 async function refresh() {
   if (!state || !state.settings.appKey) return;
-  try { const [l, h] = await Promise.all([api('/api/rate'), api('/api/rates')]); Object.assign(state.rates, h); state.latest = l; offline = false; await persist(); }
+  try {
+    const [l, h, p] = await Promise.all([api('/api/rate'), api('/api/rates'), api('/api/parallel').catch(() => null)]);
+    Object.assign(state.rates, h); state.latest = l;
+    if (p) { state.parallelApi = { ...(state.parallelApi || {}), ...p.days }; state.parallelInfo = { latest: p.latest, lastError: p.lastError }; }
+    offline = false; await save();
+  }
   catch { offline = true; }
   if (state) render();
 }
-setInterval(() => state && refresh(), 300000);
+setInterval(() => { if (state) { refresh(); syncNow(); } }, 300000);
 let st; const sync = () => { clearTimeout(st); st = setTimeout(syncWatches, 1500); };
 async function syncWatches() {
   if (!state || !state.settings.appKey) return;
@@ -370,11 +383,99 @@ async function editRate(id, d) {
 }
 async function setParallel(d) {
   const cur = (state.parallel || {})[d];
-  const o = await ask('Black market rate on ' + d, [{ k: 'v', label: '\u20a6 per $1 (enter 0 to remove it)', value: cur || '' }]);
+  const o = await ask('Black market rate on ' + d, [{ k: 'v', label: '\u20a6 per $1 (enter 0 to go back to the automatic value)', value: cur || '' }]);
   if (!o) return;
   state.parallel = state.parallel || {};
   if (o.v > 0) state.parallel[d] = o.v; else delete state.parallel[d];
   await persist(); render();
+}
+/* ---------- sync across devices ---------- */
+let syncing = false, pt;
+const pushSoon = () => { clearTimeout(pt); pt = setTimeout(syncNow, 2000); };
+const payload = () => ({ vaults: state.vaults, parallel: state.parallel || {}, settings: { ...state.settings, appKey: undefined } });
+async function applyRemote(remote) {
+  let p;
+  try { p = JSON.parse(dec.decode(await open(DK, remote.data))); }
+  catch { throw new Error('The online copy was made with different keys. Turn sync off and on again.'); }
+  state.vaults = p.vaults; state.parallel = p.parallel || {};
+  state.settings = { ...state.settings, ...p.settings, appKey: state.settings.appKey };
+}
+async function syncNow(manual) {
+  if (syncing || !state || !store.sync || !store.sync.on || !state.settings.appKey) return;
+  syncing = true;
+  try {
+    const S = store.sync, remote = await api('/api/sync'), rv = remote ? remote.version : 0;
+    if (rv > S.version) {
+      let take = !S.dirty;
+      if (!take) {
+        const c = await pick('Sync conflict', 'This device and the online copy both changed. Which one should be kept?', ['Keep this device', 'Use the online copy']);
+        if (c < 0) return;
+        take = c === 1;
+      }
+      if (take) {
+        await applyRemote(remote);
+        S.version = rv; S.dirty = false; S.last = new Date().toISOString();
+        await save(); render(); if (manual) toast('Synced.');
+        return;
+      }
+    }
+    if (S.dirty || rv < S.version) {
+      const before = JSON.stringify(payload());
+      const blob = { salt: S.salt, wrapPass: S.wrapPass, data: await seal(DK, enc.encode(before)) };
+      const r = await api('/api/sync', { baseVersion: rv, blob });
+      if (r.conflict) { setTimeout(syncNow, 500); return; }
+      S.version = r.version; S.last = new Date().toISOString();
+      if (JSON.stringify(payload()) === before) S.dirty = false; else pushSoon();
+      saveStore(); if (view.n === 'settings') render();
+      if (manual) toast('Synced.');
+    } else { S.last = new Date().toISOString(); saveStore(); if (manual) toast('Already up to date.'); }
+  } catch (e) { if (manual) toast('Sync failed: ' + e.message); }
+  finally { syncing = false; }
+}
+async function enableSync() {
+  if (!state.settings.appKey) return toast('Enter the server key first (Edit settings).');
+  const o = await ask('Turn on sync', [{ k: 'p1', label: 'Sync passphrase (8 or more characters)', type: 'secret' }, { k: 'p2', label: 'Repeat the passphrase', type: 'secret' }], 'Turn on');
+  if (!o) return;
+  if (o.p1.length < 8) return toast('Use at least 8 characters.');
+  if (o.p1 !== o.p2) return toast('The passphrases do not match.');
+  try {
+    const remote = await api('/api/sync');
+    if (remote) {
+      const c = await pick('An online copy already exists', 'To use it on this device, install the app fresh and choose Sync from another device on the PIN screen. Or replace the online copy with the data on this device.', ['Replace the online copy', 'Cancel']);
+      if (c !== 0) return;
+    }
+    const salt = crypto.getRandomValues(new Uint8Array(16)), data = JSON.stringify(payload());
+    const wrapPass = await seal(await kek(o.p1, salt), DKraw);
+    const r = await api('/api/sync', { baseVersion: remote ? remote.version : 0, blob: { salt: b64(salt), wrapPass, data: await seal(DK, enc.encode(data)) } });
+    if (r.conflict) throw new Error('The online copy changed. Try again.');
+    store.sync = { on: true, version: r.version, salt: b64(salt), wrapPass, dirty: false, last: new Date().toISOString() };
+    saveStore(); toast('Sync is on.'); render();
+  } catch (e) { toast('Could not turn on sync: ' + e.message); }
+}
+async function disableSync() {
+  const c = await pick('Turn off sync?', 'This device keeps its data. Your other devices keep theirs too.', ['Turn off, keep the online copy', 'Turn off and delete the online copy', 'Cancel']);
+  if (c !== 0 && c !== 1) return;
+  try { if (c === 1) await api('/api/sync', null, 'DELETE'); store.sync = null; saveStore(); render(); toast(c === 1 ? 'Sync is off and the online copy is deleted.' : 'Sync is off.'); }
+  catch (e) { toast(e.message); }
+}
+async function joinView() {
+  const o = await ask('Sync from another device', [{ k: 'key', label: 'Server key (your APP_KEY)', type: 'text' }, { k: 'pass', label: 'Sync passphrase', type: 'secret' }, { k: 'pin', label: 'New 4-digit PIN for this device', type: 'password' }], 'Sync');
+  if (!o) return;
+  if (!/^\d{4}$/.test(o.pin)) return toast('Use exactly 4 digits for the PIN.');
+  try {
+    const key = o.key.trim(), r = await fetch('/api/sync', { headers: { 'x-app-key': key } });
+    if (r.status === 401) throw new Error('Wrong server key.');
+    if (!r.ok) throw new Error('Server error.');
+    const remote = await r.json();
+    if (!remote) throw new Error('No online copy found. Turn on sync on your other device first.');
+    let raw;
+    try { raw = await open(await kek(o.pass, unb64(remote.salt)), remote.wrapPass); } catch { throw new Error('Wrong sync passphrase.'); }
+    DKraw = raw; DK = await importDK(raw);
+    const p = JSON.parse(dec.decode(await open(DK, remote.data))), salt = crypto.getRandomValues(new Uint8Array(16));
+    store = { salt: b64(salt), wrapPin: await seal(await kek(o.pin, salt), DKraw), sync: { on: true, version: remote.version, salt: remote.salt, wrapPass: remote.wrapPass, dirty: false, last: new Date().toISOString() } };
+    state = { vaults: p.vaults, parallel: p.parallel || {}, rates: {}, latest: null, deviceId: crypto.randomUUID(), settings: { margin: 10, tax: 10, lockMin: 5, ...p.settings, appKey: key } };
+    await save(); started();
+  } catch (e) { DK = DKraw = null; toast(e.message); }
 }
 async function editSettings() {
   const s = state.settings;
@@ -412,7 +513,7 @@ function listHTML() {
   const cards = state.vaults.map(v => {
     const c = calc(v), r = rows(v).at(-1); tot += v.loan; if (r) n[statusOf(v, r.your)]++;
     return `<div class="card tap" onclick="nav('vault','${v.id}')"><div class="row"><b>${esc(v.name)}</b>${r ? badge(statusOf(v, r.your)) : '<span class="mute">No rates yet</span>'}</div>
-    <div class="grid" style="margin-top:10px"><div><small>Today's rate</small><b>${r ? '\u20a6' + N(r.your) : '\u2013'}</b></div><div><small>Max safe rate</small><b>\u20a6${N(c.maxSafe)}</b></div><div><small>Room left</small><b>${r ? '\u20a6' + N(c.maxSafe - r.your) : '\u2013'}</b></div><div><small>Loan</small><b>$${N(v.loan, 0)}</b></div></div></div>`;
+    <div class="grid" style="margin-top:10px"><div><small>Today's rate</small><b>${r ? '\u20a6' + N(r.your) : '\u2013'}</b></div><div><small>Max safe rate</small><b>\u20a6${N(c.maxSafe)}</b></div><div><small>Room left</small><b class="${r ? sgn(c.maxSafe - r.your) : ''}">${r ? '\u20a6' + N(c.maxSafe - r.your) : '\u2013'}</b></div><div><small>Loan</small><b>$${N(v.loan, 0)}</b></div></div></div>`;
   }).join('');
   const hero = state.vaults.length
     ? `<div class="card hero"><small>Total loans</small><div class="big">$${N(tot, 0)}</div><div class="chips"><span class="badge safe">${n.safe} Safe</span><span class="badge close">${n.close} Getting close</span><span class="badge losing">${n.losing} Losing</span></div></div>`
@@ -432,11 +533,11 @@ function vaultHTML(v) {
   const c = calc(v), rs = rows(v), r = rs.at(-1), gap = gapFor(v, today());
   const cur = r ? r.your : null, pr = cur ? profitOf(c, cur) : null, mo = v.repay === 'monthly';
   const pTxt = pr ? (pr.naira >= 0 ? '+' : '\u2212') + '$' + N(Math.abs(pr.usd)) + ' (\u20a6' + N(Math.abs(pr.naira), 0) + ')' : '\u2013';
-  const stats = `<div class="card hero"><div class="row"><div><small>Today's rate (yours)</small><div class="big">${r ? '₦' + N(r.your) : '–'}</div></div>${r ? badge(statusOf(v, r.your)) : ''}</div><div class="hero-sub"><span>Max safe rate<b>\u20a6${N(c.maxSafe)}</b></span><span>Room left<b>${r ? '\u20a6' + N(c.maxSafe - r.your) : '\u2013'}</b></span></div></div>
+  const stats = `<div class="card hero"><div class="row"><div><small>Today's rate (yours)</small><div class="big">${r ? '₦' + N(r.your) : '–'}</div></div>${r ? badge(statusOf(v, r.your)) : ''}</div><div class="hero-sub"><span>Max safe rate<b>\u20a6${N(c.maxSafe)}</b></span><span>Room left<b class="${r ? sgn(c.maxSafe - r.your) : ''}">${r ? '\u20a6' + N(c.maxSafe - r.your) : '\u2013'}</b></span></div></div>
   <div class="card"><div class="grid">
   <div><small>Max safe rate${q('maxSafe')}</small><b>₦${N(c.maxSafe)}</b></div>
   <div><small>Early warning rate${q('early')}</small><b>₦${N(c.maxSafe - v.margin)}</b></div>
-  <div><small>Room left${q('room')}</small><b>${r ? '₦' + N(c.maxSafe - r.your) : '–'}</b></div>
+  <div><small>Room left${q('room')}</small><b class="${r ? sgn(c.maxSafe - r.your) : ''}">${r ? '₦' + N(c.maxSafe - r.your) : '–'}</b></div>
   <div><small>Rate gap${q('gap')}</small><b>₦${N(gap)}</b></div>
   <div><small>Converted${v.fee > 0 ? ' (after ' + N(v.fee, 2) + '% fee)' : ''}</small><b>₦${N(c.conv, 0)}</b></div>
   ${mo ? `<div><small>Monthly payment</small><b>$${N(v.sched[0] ? v.sched[0].usd : 0)}</b></div>` : `<div><small>Repay by ${addM(v.start, v.term)}</small><b>$${N(c.repay)}</b></div>`}
@@ -445,7 +546,7 @@ function vaultHTML(v) {
   const inv = v.investments.map(i => `<div class="card"><div class="row"><b>${esc(i.name)}</b><span><button class="ghost sm" onclick="editInv('${v.id}','${i.id}')">Edit</button> <button class="ghost sm" onclick="delInv('${v.id}','${i.id}')">Remove</button></span></div><p class="mute" style="margin:6px 0 0">₦${N(i.amount, 0)} at ${N(i.gross, 1)}% with ${N(i.tax, 1)}% tax on the gain, ${i.tenor} months. Pays ₦${N(i.amount * (1 + (i.gross / 100) * (1 - i.tax / 100) * (i.tenor / 12)), 0)}.</p></div>`).join('');
   const left = c.conv - c.put;
   const sch = mo ? `<h2>Repayments</h2><div class="scroll"><table><tr><th>#</th><th>Due</th><th>USD</th><th>Rate</th><th>Naira</th></tr>${v.sched.map(x => { const lock = x.date <= today(), rt = rowRate(v, x, cur); return `<tr><td>${x.n}${lock ? ' \u2713' : ''}</td><td>${x.date}</td><td>${N(x.usd)}</td><td><button onclick="editInstall('${v.id}',${x.n})">${rt ? N(rt) : '\u2013'}${x.rate ? ' \u270e' : ''}${lock ? '' : ' ~'}</button></td><td>${rt ? N(x.usd * rt, 0) : '\u2013'}</td></tr>`; }).join('')}</table></div><p class="mute">\u2713 means the due date has passed, so that day\u2019s rate is locked in. ~ is an estimate at today\u2019s rate. Tap a rate to fix the date or the rate you actually paid.</p>` : '';
-  const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Market</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td>${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No rates yet. In Settings, enter the server key to load live rates.</p>';
+  const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Market</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td class="${sgn(c.maxSafe - x.your)}">${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No rates yet. In Settings, enter the server key to load live rates.</p>';
   return hdr(v.name, true) + stats + (rs.length ? '<h2>Rate history</h2>' + chart(rs, c, v) : '') +
     `<h2>Investments</h2>${inv || '<p class="note">Add the investments this loan is put into.</p>'}${Math.abs(left) > 1 ? `<p class="mute">${left > 0 ? '₦' + N(left, 0) + ' of the converted loan is not invested yet and counts as earning nothing.' : 'Your investments add up to ₦' + N(-left, 0) + ' more than the converted loan.'}</p>` : ''}<button onclick="addInv('${v.id}')">Add investment</button>` +
     `${sch}<h2>Daily history</h2>${table}<h2>Vault</h2><div class="row"><button class="ghost" onclick="editVault('${v.id}')">Edit vault</button><button class="ghost" onclick="delVault('${v.id}')">Delete vault</button></div>`;
@@ -456,18 +557,24 @@ function settingsHTML() {
   <h2>Security</h2><div class="col"><button class="ghost" onclick="changePin()">Change PIN</button><button class="ghost" onclick="enableBio()">${store.bio ? 'Reset biometric unlock' : 'Turn on biometric unlock'}</button><button class="ghost" onclick="setRecovery()">${store.wrapAns ? 'Change recovery question' : 'Set recovery question'}</button></div>
   ${store.wrapAns ? '' : '<p class="note" style="margin-top:8px">No recovery question yet. If you forget your PIN, your data cannot be recovered.</p>'}
   <h2>Alerts</h2><div class="col"><button class="ghost" onclick="enablePush()">Turn on push alerts</button><button class="ghost" onclick="testPush()">Send a test alert</button></div>
+  <h2>Sync</h2>${store.sync && store.sync.on ? `<div class="card"><b>Sync is on</b><p class="mute" style="margin:4px 0 0">${store.sync.last ? 'Last synced ' + new Date(store.sync.last).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) + '.' : ''}${store.sync.dirty ? ' Changes waiting to upload.' : ''}</p></div><div class="col"><button class="ghost" onclick="syncNow(true)">Sync now</button><button class="ghost" onclick="disableSync()">Turn off sync</button></div>` : '<p class="mute">Keep the same vaults on your phone and laptop. Your data is encrypted with a sync passphrase before it leaves this device.</p><div class="col"><button class="ghost" onclick="enableSync()">Turn on sync</button></div>'}
   <h2>Backup</h2><div class="col"><button class="ghost" onclick="exportBackup()">Download encrypted backup</button><label class="ghost" style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;color:var(--ink);margin:0">Restore a backup<input type="file" accept=".json" onchange="importBackup(this)" style="display:none"></label></div>
   <p class="mute">Backups stay encrypted. You need your PIN or recovery answer to open one.</p>`;
 }
 function ratesHTML() {
-  const par = state.parallel || {}, all = [...new Set([...Object.keys(state.rates), ...Object.keys(par), today()])].sort(), days = all.slice(-7).reverse();
+  const typed = state.parallel || {}, auto = state.parallelApi || {}, pi = state.parallelInfo || {};
+  const all = [...new Set([...Object.keys(state.rates), ...Object.keys(typed), ...Object.keys(auto), today()])].sort(), days = all.slice(-7).reverse();
+  const when = iso => new Date(iso).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', dateStyle: 'medium', timeStyle: 'short' });
   const body = days.map(d => {
-    const r = state.rates[d], b = par[d], prev = state.rates[all[all.indexOf(d) - 1]], ch = r != null && prev != null ? r - prev : null;
-    return `<tr><td>${d}</td><td>${r != null ? N(r) : '\u2013'}</td><td class="${ch > 0 ? 'losing' : ch < 0 ? 'safe' : ''}">${ch == null ? '\u2013' : (ch > 0 ? '+' : '') + N(ch)}</td><td><button onclick="setParallel('${d}')">${b ? N(b) : '+ add'}</button></td><td>${b != null && r != null ? (b - r >= 0 ? '+' : '') + N(b - r) : '\u2013'}</td></tr>`;
+    const r = state.rates[d], prev = state.rates[all[all.indexOf(d) - 1]], ch = r != null && prev != null ? r - prev : null;
+    const mine = typed[d], b = mine || auto[d];
+    const chCell = ch == null ? '\u2013' : (ch > 0 ? '\u25b2 +' : ch < 0 ? '\u25bc ' : '') + N(ch);
+    return `<tr><td>${d}</td><td>${r != null ? N(r) : '\u2013'}</td><td class="${sgn(ch)}">${chCell}</td><td><button onclick="setParallel('${d}')">${b ? N(b) + (mine ? ' \u270e' : '') : '+ add'}</button></td></tr>`;
   }).join('');
-  const upd = state.latest ? `<p class="mute">Market rate last updated ${new Date(state.latest.at).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', dateStyle: 'medium', timeStyle: 'short' })}.</p>` : '';
+  const upd = (state.latest ? `<p class="mute">Market rate last updated ${when(state.latest.at)}.</p>` : '') + (pi.latest ? `<p class="mute">Black market (Monierate) last updated ${when(pi.latest.at)}.</p>` : '');
+  const bad = pi.lastError && (!pi.latest || pi.lastError.at > pi.latest.at) ? '<p class="note">The latest black market check failed, so the last good value is shown.</p>' : '';
   return hdr('Rates') + (Object.keys(state.rates).length ? '' : '<p class="note">No market rates yet. Enter the server key in Settings to load them.</p>') +
-    `<p class="mute">Market rate in \u20a6 per $1, last 7 days. Green means the naira got stronger, red means it got weaker. Black market rates are entered by you, because they differ by dealer and location. Tap a cell to add or change one. Gap is black market minus market.</p><div class="card scroll"><table><tr><th>Date</th><th>Market</th><th>Change</th><th>Black market</th><th>Gap</th></tr>${body}</table></div>${upd}`;
+    `<p class="mute">Market rate in \u20a6 per $1, last 7 days. Change is green with \u25b2 when the rate went up and red with \u25bc when it went down. The black market rate comes from Monierate twice a day. Tap a cell to enter your own rate instead; \u270e marks one you entered.</p><div class="card scroll"><table><tr><th>Date</th><th>Market</th><th>Change</th><th>Black market</th></tr>${body}</table></div>${upd}${bad}`;
 }
 function render() {
   let html;
