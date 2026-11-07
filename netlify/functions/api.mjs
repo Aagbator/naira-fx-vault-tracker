@@ -4,7 +4,8 @@ export const config = { path: '/api/*' };
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
 
 export default async (req) => {
-  if (!process.env.APP_KEY || req.headers.get('x-app-key') !== process.env.APP_KEY) return json({ error: 'Wrong server key' }, 401);
+  if (!process.env.APP_KEY) return json({ error: 'APP_KEY is not set for this site on Netlify. Add it under Environment variables (all deploy contexts) and redeploy.' }, 503);
+  if (req.headers.get('x-app-key') !== process.env.APP_KEY) return json({ error: 'Wrong server key' }, 401);
   const route = `${req.method} ${new URL(req.url).pathname.replace(/^\/api/, '')}`;
   const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
   const bad = m => json({ error: m }, 400);

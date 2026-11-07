@@ -258,7 +258,7 @@ function ask(title, fields, okText = 'Save') {
   return new Promise(res => {
     const d = document.createElement('dialog');
     // The OK button comes first in the markup so Enter submits it; row-reverse still shows Cancel on the left.
-    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type === 'secret' ? 'password' : f.type || 'number'}" step="any" autocomplete="off" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row" style="flex-direction:row-reverse"><button value="ok">${okText}</button><button value="x" class="ghost">Cancel</button></div></form>`;
+    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type === 'secret' ? 'password' : f.type || 'number'}" step="any" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row" style="flex-direction:row-reverse"><button value="ok">${okText}</button><button value="x" class="ghost">Cancel</button></div></form>`;
     d.onclose = () => { const ok = d.returnValue === 'ok', o = {}; if (ok) fields.forEach(f => { const v = d.querySelector(`[name=${f.k}]`).value; o[f.k] = (f.type || 'number') === 'number' ? Number(v) : v; }); d.remove(); res(ok ? o : null); };
     document.body.appendChild(d); d.showModal();
   });
@@ -318,7 +318,7 @@ const badge = s => `<span class="badge ${s}">${BADGE[s]}</span>`;
 async function api(path, body, method) {
   const r = await fetch(path, { method: method || (body ? 'POST' : 'GET'), headers: { 'x-app-key': state.settings.appKey, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 409) return { conflict: true, ...(await r.json()) };
-  if (!r.ok) throw new Error(r.status === 401 ? 'Wrong server key' : 'Server error');
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(r.status === 401 ? 'Wrong server key' : j.error || 'Server error'); }
   return r.json();
 }
 async function refresh() {
@@ -533,14 +533,20 @@ async function disableSync() {
   try { if (c === 1) await api('/api/sync', null, 'DELETE'); store.sync = null; saveStore(); render(); toast(c === 1 ? 'Sync is off and the online copy is deleted.' : 'Sync is off.'); }
   catch (e) { toast(e.message); }
 }
+// Server keys never contain spaces: drop spaces, line breaks and invisible characters that copy and paste can add.
+const cleanKey = k => String(k || '').replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, '');
+async function keyError(r, key) {
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) return `Wrong server key. The server did not accept the ${key.length}-character key you entered. Check it matches APP_KEY in Netlify exactly, including upper and lower case.`;
+  return j.error || 'Server error (' + r.status + ').';
+}
 async function joinView() {
   const o = await ask('Sync from another device', [{ k: 'key', label: 'Server key (your APP_KEY)', type: 'text' }, { k: 'pass', label: 'Sync passphrase', type: 'secret' }, { k: 'pin', label: 'New 4-digit PIN for this device', type: 'password' }], 'Sync');
   if (!o) return;
   if (!/^\d{4}$/.test(o.pin)) return toast('Use exactly 4 digits for the PIN.');
   try {
-    const key = o.key.trim(), r = await fetch('/api/sync', { headers: { 'x-app-key': key } });
-    if (r.status === 401) throw new Error('Wrong server key.');
-    if (!r.ok) throw new Error('Server error.');
+    const key = cleanKey(o.key), r = await fetch('/api/sync', { headers: { 'x-app-key': key } });
+    if (!r.ok) throw new Error(await keyError(r, key));
     const remote = await r.json();
     if (!remote) throw new Error('No online copy found. Turn on sync on your other device first.');
     let raw;
@@ -555,7 +561,7 @@ async function joinView() {
 async function editSettings() {
   const s = state.settings;
   const o = await ask('Settings', [{ k: 'margin', label: 'Safety margin for new vaults (₦)', value: s.margin }, { k: 'tax', label: 'Default tax on gains (%)', value: s.tax }, { k: 'lockMin', label: 'Auto-lock after (minutes)', value: s.lockMin }, { k: 'appKey', label: 'Server key', type: 'text', value: s.appKey }]);
-  if (!o) return; o.lockMin = Math.min(60, Math.max(1, Math.round(o.lockMin) || 5)); Object.assign(s, o);
+  if (!o) return; o.lockMin = Math.min(60, Math.max(1, Math.round(o.lockMin) || 5)); o.appKey = cleanKey(o.appKey); Object.assign(s, o);
   await persist(); reset(); refresh(); render();
 }
 function exportBackup() {
