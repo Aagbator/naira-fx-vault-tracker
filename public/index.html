@@ -49,9 +49,20 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .grid div b{font-variant-numeric:tabular-nums;font-size:16px}
 .q{border:1px solid var(--line);background:transparent;color:var(--mute);border-radius:50%;width:20px;height:20px;min-height:0;padding:0;font-size:12px;margin-left:4px;vertical-align:middle}
 .note{background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:10px 14px;color:var(--mute);font-size:14px}
-.chart{width:100%;height:auto;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow)}
-.chart line{stroke-width:1.5;stroke-dasharray:5 4}.chart .ms{stroke:var(--loss)}.chart .ew{stroke:var(--warn)}
+.chart-card{padding:14px 12px 12px}
+.chart-read{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:0 4px 10px}
+.chart-read small{display:block;color:var(--mute);font-size:12px}
+.chart-read b{font-variant-numeric:tabular-nums;font-size:15px}
+.chart-date{margin:0 4px 6px;font-size:13px;color:var(--mute);font-weight:600}
+.chart{display:block;width:100%;height:auto;touch-action:pan-y;cursor:crosshair;user-select:none;-webkit-user-select:none}
+.chart text{fill:var(--mute);font-size:10px;font-variant-numeric:tabular-nums}
+.chart .grid{stroke:var(--line);stroke-width:1}
+.chart .ms,.chart .ew{stroke-width:1.5;stroke-dasharray:5 4}.chart .ms{stroke:var(--loss)}.chart .ew{stroke:var(--warn)}
 .chart polyline{fill:none;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}.chart .la{stroke:var(--mute)}.chart .ly{stroke:var(--acc)}
+.chart .cur{stroke:var(--ink);stroke-width:1;opacity:.35}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:10px 4px 0;font-size:12.5px;color:var(--mute)}
+.legend i{display:inline-block;width:16px;height:0;border-top:2.5px solid;vertical-align:middle;margin-right:6px}
+.legend i.d{border-top-style:dashed;border-top-width:2px}
 .scroll{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:14px}
 th{color:var(--mute);font-weight:600;font-size:12.5px}
@@ -543,14 +554,43 @@ function listHTML() {
     : '<div class="card hero"><div class="big">Welcome</div><p>A vault is one loan with its interest, and the investments you put it into. Create your first one below.</p></div>';
   return hdr('Vaults') + hero + cards + '<button class="wide" onclick="newVault()">New vault</button>';
 }
+// Rate history chart: axes with ₦ labels, dates along the bottom, and a tap/drag readout.
+let CH = null;
+const fmtD = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 function chart(rs, c, v) {
-  const W = 320, H = 150, P = 8, ys = rs.flatMap(r => [r.api, r.your]).concat([c.maxSafe, c.maxSafe - v.margin]);
-  const lo = Math.min(...ys) - 2, hi = Math.max(...ys) + 2;
-  const x = i => (rs.length < 2 ? W / 2 : P + (i * (W - 2 * P)) / (rs.length - 1)), y = n => H - P - ((n - lo) / (hi - lo)) * (H - 2 * P);
+  const W = 340, H = 190, L = 46, R = 10, T = 10, B = 24, early = c.maxSafe - v.margin;
+  const ys = rs.flatMap(r => [r.api, r.your]).concat([c.maxSafe, early]);
+  let lo = Math.min(...ys), hi = Math.max(...ys); const pad = Math.max((hi - lo) * 0.08, 2); lo -= pad; hi += pad;
+  const n = rs.length, x = i => (n < 2 ? (L + W - R) / 2 : L + (i * (W - L - R)) / (n - 1)), y = val => T + ((hi - val) / (hi - lo)) * (H - T - B);
+  const ticks = [0, 1, 2, 3].map(k => lo + ((hi - lo) * k) / 3);
+  const grid = ticks.map(t => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}"/><text x="${L - 6}" y="${(y(t) + 3).toFixed(1)}" text-anchor="end">${N(t, 0)}</text>`).join('');
+  const xi = n < 2 ? [0] : [...new Set([0, Math.round((n - 1) / 2), n - 1])];
+  const xl = xi.map(i => `<text x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="${n < 2 ? 'middle' : i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}">${fmtD(rs[i].d)}</text>`).join('');
+  const hl = (val, cls) => `<line class="${cls}" x1="${L}" x2="${W - R}" y1="${y(val).toFixed(1)}" y2="${y(val).toFixed(1)}"/>`;
   const pl = k => rs.map((r, i) => `${x(i).toFixed(1)},${y(r[k]).toFixed(1)}`).join(' ');
-  const hl = (n, cls) => `<line class="${cls}" x1="0" x2="${W}" y1="${y(n).toFixed(1)}" y2="${y(n).toFixed(1)}"/>`;
-  const dot = (k, cls) => (rs.length === 1 ? `<circle cx="${W / 2}" cy="${y(rs[0][k]).toFixed(1)}" r="3.5" fill="var(--${cls === 'ly' ? 'acc' : 'mute'})"/>` : '');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Market rate and your rate against the Max safe rate">${hl(c.maxSafe, 'ms')}${hl(c.maxSafe - v.margin, 'ew')}<polyline class="la" points="${pl('api')}"/><polyline class="ly" points="${pl('your')}"/>${dot('api', 'la')}${dot('your', 'ly')}</svg><p class="mute">Grey: market rate. Indigo: your rate. Red dashes: Max safe rate. Amber dashes: Early warning rate.</p>`;
+  const dots = n <= 40 ? rs.map((r, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(r.your).toFixed(1)}" r="2.2" fill="var(--acc)"/>`).join('') : '';
+  CH = { rs, c, W, n, L, R, x, y };
+  return `<div class="card chart-card"><p class="chart-date" id="chD"></p><div class="chart-read"><div><small>Market</small><b id="chA"></b></div><div><small>Yours</small><b id="chY"></b></div><div><small>Room left</small><b id="chR"></b></div></div>
+  <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Rate history. Tap or drag to see each day." onpointerdown="chartPick(event)" onpointermove="chartPick(event)">${grid}${hl(c.maxSafe, 'ms')}${hl(early, 'ew')}<polyline class="la" points="${pl('api')}"/><polyline class="ly" points="${pl('your')}"/>${dots}
+  <line id="chL" class="cur" y1="${T}" y2="${H - B}"/><circle id="chCa" r="4" fill="var(--mute)" stroke="var(--card)" stroke-width="2"/><circle id="chCy" r="5" fill="var(--acc)" stroke="var(--card)" stroke-width="2"/>${xl}</svg>
+  <div class="legend"><span><i style="border-color:var(--mute)"></i>Market rate</span><span><i style="border-color:var(--acc)"></i>Your rate</span><span><i class="d" style="border-color:var(--loss)"></i>Max safe ₦${N(c.maxSafe)}</span><span><i class="d" style="border-color:var(--warn)"></i>Early warning ₦${N(early)}</span></div>
+  <p class="mute" style="margin:8px 4px 0;font-size:12.5px">Tap or drag across the chart to see any day.</p></div>`;
+}
+function chartShow(i) {
+  if (!CH || !$('#chD')) return;
+  const r = CH.rs[i], room = CH.c.maxSafe - r.your, px = CH.x(i).toFixed(1);
+  $('#chD').textContent = fmtD(r.d) + (i === CH.n - 1 ? ' (latest)' : '');
+  $('#chA').textContent = '₦' + N(r.api); $('#chY').textContent = '₦' + N(r.your) + (r.edited ? ' ✎' : '');
+  const R = $('#chR'); R.textContent = '₦' + N(room); R.className = sgn(room);
+  $('#chL').setAttribute('x1', px); $('#chL').setAttribute('x2', px);
+  $('#chCa').setAttribute('cx', px); $('#chCa').setAttribute('cy', CH.y(r.api).toFixed(1));
+  $('#chCy').setAttribute('cx', px); $('#chCy').setAttribute('cy', CH.y(r.your).toFixed(1));
+}
+function chartPick(e) {
+  if (!CH) return;
+  const b = e.currentTarget.getBoundingClientRect(), px = ((e.clientX - b.left) / b.width) * CH.W;
+  const i = CH.n < 2 ? 0 : Math.round(((px - CH.L) / (CH.W - CH.L - CH.R)) * (CH.n - 1));
+  chartShow(Math.max(0, Math.min(CH.n - 1, i)));
 }
 function vaultHTML(v) {
   const c = calc(v), rs = rows(v), r = rs.at(-1), gap = gapFor(v, today());
@@ -607,6 +647,7 @@ function render() {
   else if (view.n === 'vault' && state.vaults.some(v => v.id === view.id)) html = vaultHTML(state.vaults.find(v => v.id === view.id));
   else { view = { n: 'list' }; html = listHTML(); }
   $('#app').innerHTML = html + tabbar();
+  if (view.n === 'vault' && CH) chartShow(CH.n - 1);
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
