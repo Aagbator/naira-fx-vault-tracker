@@ -43,7 +43,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-of
 .hero .badge{color:#fff;background:rgba(255,255,255,.16)}
 .hero .badge.safe::before{background:#5CE6AB}.hero .badge.close::before{background:#FFC857}.hero .badge.losing::before{background:#FF8A94}
 .safe{color:var(--safe)}.close{color:var(--warn)}.losing{color:var(--loss)}
-.hero .safe{color:#7CF0B8}.hero .losing{color:#FFA1AA}
+.hero .safe{color:#7CF0B8}.hero .close{color:#FFD88A}.hero .losing{color:#FFA1AA}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 12px}
 .grid div small{display:block;color:var(--mute);font-size:12.5px}
 .grid div b{font-variant-numeric:tabular-nums;font-size:16px}
@@ -89,7 +89,22 @@ const unb64url = s => unb64(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const N = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
-const addM = (d, m) => { const x = new Date(d + 'T12:00:00'); x.setMonth(x.getMonth() + m); return x.toISOString().slice(0, 10); };
+// Add m calendar months, keeping the day but capping it at the month's last day (Jan 31 + 1 = Feb 28).
+const addM = (d, m) => {
+  const [y, mo, day] = d.split('-').map(Number), t = mo - 1 + m, ty = y + Math.floor(t / 12), tm = ((t % 12) + 12) % 12;
+  const last = new Date(Date.UTC(ty, tm + 1, 0)).getUTCDate();
+  return `${ty}-${String(tm + 1).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+};
+// The old addM rolled over (Jan 31 + 1 month = Mar 3). Used only to find and repair dates it produced.
+const oldAddM = (d, m) => { const x = new Date(d + 'T12:00:00'); x.setMonth(x.getMonth() + m); return x.toISOString().slice(0, 10); };
+function fixSchedDates() {
+  let n = 0;
+  for (const v of state.vaults) for (const r of (v.repay === 'monthly' && v.sched) || []) {
+    const bad = oldAddM(v.start, r.n), good = addM(v.start, r.n);
+    if (r.date === bad && bad !== good) { r.date = good; n++; }
+  }
+  return n;
+}
 const toast = m => { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = 'none'), 7000); };
 
 /* ---------- encryption ---------- */
@@ -104,7 +119,7 @@ async function kek(secret, salt) {
 async function seal(key, bytes) { const iv = crypto.getRandomValues(new Uint8Array(12)); return { iv: b64(iv), ct: b64(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes)) }; }
 async function open(key, o) { return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(o.iv) }, key, unb64(o.ct))); }
 const norm = s => s.trim().toLowerCase().replace(/\s+/g, ' ');
-async function save() { store.data = await seal(DK, enc.encode(JSON.stringify(state))); saveStore(); }
+async function save() { if (!state || !DK) return; store.data = await seal(DK, enc.encode(JSON.stringify(state))); saveStore(); }
 async function persist() {
   await save();
   if (store.sync && store.sync.on) { store.sync.dirty = true; saveStore(); pushSoon(); }
@@ -131,17 +146,22 @@ document.addEventListener('visibilitychange', () => {
   else if (state && Date.now() - hiddenAt > state.settings.lockMin * 60000) lock();
   else if (state) { refresh(); syncNow(); }
 });
-function lock() { state = DK = DKraw = null; clearTimeout(lt); lockView(); }
+function lock() {
+  // Cancel any open dialog so the code waiting on it finishes now (as Cancel) instead of after the data is gone.
+  document.querySelectorAll('dialog[open]').forEach(d => d.close(''));
+  state = DK = DKraw = null; clearTimeout(lt); lockView();
+}
 
 function lockView(mode) {
   const a = $('#app');
   const pinBox = '<input id="pin" type="password" inputmode="numeric" maxlength="4" pattern="[0-9]*" autocomplete="off" aria-label="4-digit PIN">';
   if (!store) {
-    a.innerHTML = `<div class="lock"><h1>Naira Vaults</h1><p class="mute">Set a 4-digit PIN. Your data is encrypted on this device with it.</p>${pinBox}<input id="pin2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Repeat PIN" placeholder="repeat"><button onclick="doSetup()">Create PIN</button><button class="ghost" onclick="joinView()">Sync from another device</button><p id="err" class="losing"></p></div>`;
+    // Each lock screen is a form, so Enter (or Go on a phone keyboard) runs the main button.
+    a.innerHTML = `<form class="lock" onsubmit="event.preventDefault();doSetup()"><h1>Naira Vaults</h1><p class="mute">Set a 4-digit PIN. Your data is encrypted on this device with it.</p>${pinBox}<input id="pin2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="Repeat PIN" placeholder="repeat"><button>Create PIN</button><button type="button" class="ghost" onclick="joinView()">Sync from another device</button><p id="err" class="losing"></p></form>`;
   } else if (mode === 'recover') {
-    a.innerHTML = `<div class="lock" style="font-size:16px"><h1>Recover access</h1><p class="mute">${esc(store.q || '')}</p><label>Your answer<input id="ans" type="text" style="font-size:16px;letter-spacing:0;text-align:left"></label><label>New 4-digit PIN${pinBox}</label><button onclick="doRecover()">Reset PIN</button><button class="ghost" onclick="lockView()">Back</button><p id="err" class="losing"></p></div>`;
+    a.innerHTML = `<form class="lock" style="font-size:16px" onsubmit="event.preventDefault();doRecover()"><h1>Recover access</h1><p class="mute">${esc(store.q || '')}</p><label>Your answer<input id="ans" type="text" style="font-size:16px;letter-spacing:0;text-align:left"></label><label>New 4-digit PIN${pinBox}</label><button>Reset PIN</button><button type="button" class="ghost" onclick="lockView()">Back</button><p id="err" class="losing"></p></form>`;
   } else {
-    a.innerHTML = `<div class="lock"><h1>Naira Vaults</h1>${pinBox}<button onclick="doUnlock()">Unlock</button>${store.bio ? '<button class="ghost" onclick="doBio()">Use fingerprint or face</button>' : ''}${store.wrapAns ? '<button class="ghost" onclick="lockView(\'recover\')">Forgot PIN</button>' : ''}<p id="err" class="losing"></p></div>`;
+    a.innerHTML = `<form class="lock" onsubmit="event.preventDefault();doUnlock()"><h1>Naira Vaults</h1>${pinBox}<button>Unlock</button>${store.bio ? '<button type="button" class="ghost" onclick="doBio()">Use fingerprint or face</button>' : ''}${store.wrapAns ? '<button type="button" class="ghost" onclick="lockView(\'recover\')">Forgot PIN</button>' : ''}<p id="err" class="losing"></p></form>`;
     if (store.bio) setTimeout(doBio, 200);
   }
 }
@@ -181,6 +201,7 @@ async function doBio() {
 async function finish(raw) {
   DKraw = raw; DK = await importDK(raw);
   state = JSON.parse(dec.decode(await open(DK, store.data)));
+  if (fixSchedDates()) { await save(); sync(); }
   started();
 }
 function started() { view = { n: 'list' }; reset(); render(); refresh(); syncNow(); }
@@ -213,7 +234,8 @@ async function setRecovery() {
 function ask(title, fields, okText = 'Save') {
   return new Promise(res => {
     const d = document.createElement('dialog');
-    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type === 'secret' ? 'password' : f.type || 'number'}" step="any" autocomplete="off" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row"><button value="x" class="ghost">Cancel</button><button value="ok">${okText}</button></div></form>`;
+    // The OK button comes first in the markup so Enter submits it; row-reverse still shows Cancel on the left.
+    d.innerHTML = `<form method="dialog"><h3>${esc(title)}</h3>${fields.map(f => `<label>${esc(f.label)}<input name="${f.k}" type="${f.type === 'secret' ? 'password' : f.type || 'number'}" step="any" autocomplete="off" value="${esc(f.value ?? '')}" ${f.type === 'password' ? 'inputmode="numeric" maxlength="4"' : ''}></label>`).join('')}<div class="row" style="flex-direction:row-reverse"><button value="ok">${okText}</button><button value="x" class="ghost">Cancel</button></div></form>`;
     d.onclose = () => { const ok = d.returnValue === 'ok', o = {}; if (ok) fields.forEach(f => { const v = d.querySelector(`[name=${f.k}]`).value; o[f.k] = (f.type || 'number') === 'number' ? Number(v) : v; }); d.remove(); res(ok ? o : null); };
     document.body.appendChild(d); d.showModal();
   });
@@ -399,6 +421,7 @@ async function applyRemote(remote) {
   catch { throw new Error('The online copy was made with different keys. Turn sync off and on again.'); }
   state.vaults = p.vaults; state.parallel = p.parallel || {};
   state.settings = { ...state.settings, ...p.settings, appKey: state.settings.appKey };
+  if (fixSchedDates()) sync();
 }
 async function syncNow(manual) {
   if (syncing || !state || !store.sync || !store.sync.on || !state.settings.appKey) return;
@@ -474,7 +497,7 @@ async function joinView() {
     const p = JSON.parse(dec.decode(await open(DK, remote.data))), salt = crypto.getRandomValues(new Uint8Array(16));
     store = { salt: b64(salt), wrapPin: await seal(await kek(o.pin, salt), DKraw), sync: { on: true, version: remote.version, salt: remote.salt, wrapPass: remote.wrapPass, dirty: false, last: new Date().toISOString() } };
     state = { vaults: p.vaults, parallel: p.parallel || {}, rates: {}, latest: null, deviceId: crypto.randomUUID(), settings: { margin: 10, tax: 10, lockMin: 5, ...p.settings, appKey: key } };
-    await save(); started();
+    fixSchedDates(); await save(); started();
   } catch (e) { DK = DKraw = null; toast(e.message); }
 }
 async function editSettings() {
@@ -526,8 +549,8 @@ function chart(rs, c, v) {
   const x = i => (rs.length < 2 ? W / 2 : P + (i * (W - 2 * P)) / (rs.length - 1)), y = n => H - P - ((n - lo) / (hi - lo)) * (H - 2 * P);
   const pl = k => rs.map((r, i) => `${x(i).toFixed(1)},${y(r[k]).toFixed(1)}`).join(' ');
   const hl = (n, cls) => `<line class="${cls}" x1="0" x2="${W}" y1="${y(n).toFixed(1)}" y2="${y(n).toFixed(1)}"/>`;
-  const dot = (k, cls) => (rs.length === 1 ? `<circle cx="${W / 2}" cy="${y(rs[0][k]).toFixed(1)}" r="3.5" fill="var(--${cls === 'ly' ? 'safe' : 'mute'})"/>` : '');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Market rate and your rate against the Max safe rate">${hl(c.maxSafe, 'ms')}${hl(c.maxSafe - v.margin, 'ew')}<polyline class="la" points="${pl('api')}"/><polyline class="ly" points="${pl('your')}"/>${dot('api', 'la')}${dot('your', 'ly')}</svg><p class="mute">Grey: market rate. Green: your rate. Red dashes: Max safe rate. Amber dashes: Early warning rate.</p>`;
+  const dot = (k, cls) => (rs.length === 1 ? `<circle cx="${W / 2}" cy="${y(rs[0][k]).toFixed(1)}" r="3.5" fill="var(--${cls === 'ly' ? 'acc' : 'mute'})"/>` : '');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Market rate and your rate against the Max safe rate">${hl(c.maxSafe, 'ms')}${hl(c.maxSafe - v.margin, 'ew')}<polyline class="la" points="${pl('api')}"/><polyline class="ly" points="${pl('your')}"/>${dot('api', 'la')}${dot('your', 'ly')}</svg><p class="mute">Grey: market rate. Indigo: your rate. Red dashes: Max safe rate. Amber dashes: Early warning rate.</p>`;
 }
 function vaultHTML(v) {
   const c = calc(v), rs = rows(v), r = rs.at(-1), gap = gapFor(v, today());
@@ -564,9 +587,10 @@ function settingsHTML() {
 function ratesHTML() {
   const typed = state.parallel || {}, auto = state.parallelApi || {}, pi = state.parallelInfo || {};
   const all = [...new Set([...Object.keys(state.rates), ...Object.keys(typed), ...Object.keys(auto), today()])].sort(), days = all.slice(-7).reverse();
+  const mkt = Object.keys(state.rates).sort(); // change compares with the previous day that has a market rate
   const when = iso => new Date(iso).toLocaleString('en-GB', { timeZone: 'Africa/Lagos', dateStyle: 'medium', timeStyle: 'short' });
   const body = days.map(d => {
-    const r = state.rates[d], prev = state.rates[all[all.indexOf(d) - 1]], ch = r != null && prev != null ? r - prev : null;
+    const r = state.rates[d], prev = r != null ? state.rates[mkt[mkt.indexOf(d) - 1]] : null, ch = r != null && prev != null ? r - prev : null;
     const mine = typed[d], b = mine || auto[d];
     const chCell = ch == null ? '\u2013' : (ch > 0 ? '\u25b2 +' : ch < 0 ? '\u25bc ' : '') + N(ch);
     return `<tr><td>${d}</td><td>${r != null ? N(r) : '\u2013'}</td><td class="${sgn(ch)}">${chCell}</td><td><button onclick="setParallel('${d}')">${b ? N(b) + (mine ? ' \u270e' : '') : '+ add'}</button></td></tr>`;

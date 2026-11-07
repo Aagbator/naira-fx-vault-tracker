@@ -32,9 +32,11 @@ async function check(api) {
   const [subs, watches, status, sent] = await Promise.all([read('subs', {}), read('watches', {}), read('status', {}), read('sent', {})]);
   let subsChanged = false;
   const send = async (dev, p) => { const r = await notify(subs, dev, p); if (r.gone) subsChanged = true; };
+  const live = new Set();
   for (const [dev, list] of Object.entries(watches)) {
-    for (const w of list) {
+    for (const w of list || []) {
       const your = api + (w.gap || 0), st = statusOf(w, your), key = `${dev}:${w.id}`;
+      live.add(key);
       if (status[key] && status[key] !== st) {
         await send(dev, { title: `${w.name}: ${LABEL[st]}`, body: `Your rate ₦${your.toFixed(2)}. Max safe rate ₦${w.maxSafe.toFixed(2)}. Room left ₦${(w.maxSafe - your).toFixed(2)}.` });
       }
@@ -51,6 +53,10 @@ async function check(api) {
       }
     }
   }
+  // Drop status for vaults no longer watched, and sent-markers for dates already past.
+  for (const k of Object.keys(status)) if (!live.has(k)) delete status[k];
+  const t = today();
+  for (const k of Object.keys(sent)) { const d = /:(\d{4}-\d{2}-\d{2}):\d+$/.exec(k); if (!d || d[1] < t) delete sent[k]; }
   await Promise.all([write('status', status), write('sent', sent), subsChanged ? write('subs', subs) : null]);
 }
 
@@ -74,7 +80,7 @@ export async function pullParallel() {
 
 export const parallelFailed = e => write('parallelError', { at: new Date().toISOString(), reason: String((e && e.message) || e).slice(0, 160) });
 
-export async function pullRate() {
+export async function pullRate({ alerts = true } = {}) {
   const r = await fetch(process.env.RATE_URL || 'https://open.er-api.com/v6/latest/USD');
   const rate = Number((await r.json()).rates?.NGN);
   if (!rate) throw new Error('no NGN rate in response');
@@ -82,6 +88,6 @@ export async function pullRate() {
   rates[today()] = rate;
   const latest = { rate, at: new Date().toISOString() };
   await Promise.all([write('rates', rates), write('latest', latest)]);
-  await check(rate);
+  if (alerts) await check(rate);
   return latest;
 }
