@@ -73,9 +73,21 @@ export async function pullParallel() {
   const days = await read('parallel', {});
   days[today()] = rate;
   for (const k of Object.keys(days).sort().slice(0, -60)) delete days[k];
-  const latest = { rate, at: new Date().toISOString() };
+  const prev = await read('parallelLatest', null), latest = { rate, at: new Date().toISOString() };
   await Promise.all([write('parallel', days), write('parallelLatest', latest), del('parallelError')]);
+  // Tell every subscribed device the new amount, with the change since the last update.
+  const fmt = n => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const ch = prev ? rate - prev.rate : null;
+  const chTxt = ch == null ? '' : ch > 0 ? ` (up ₦${fmt(ch)})` : ch < 0 ? ` (down ₦${fmt(-ch)})` : ' (no change)';
+  await notifyAll({ title: `Black market: ₦${fmt(rate)}`, body: `Monierate USD/NGN is ₦${fmt(rate)} per $1${chTxt}.${mkt ? ` Market rate ₦${fmt(mkt.rate)}.` : ''}` });
   return latest;
+}
+
+export async function notifyAll(payload) {
+  const subs = await read('subs', {});
+  const results = await Promise.all(Object.keys(subs).map(dev => notify(subs, dev, payload)));
+  if (results.some(r => r.gone)) await write('subs', subs);
+  return results.filter(r => r.ok).length;
 }
 
 export const parallelFailed = e => write('parallelError', { at: new Date().toISOString(), reason: String((e && e.message) || e).slice(0, 160) });

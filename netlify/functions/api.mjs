@@ -1,4 +1,4 @@
-import { read, write, del, pullRate, notify } from '../lib/core.mjs';
+import { read, write, del, pullRate, notify, pullParallel, parallelFailed } from '../lib/core.mjs';
 
 export const config = { path: '/api/*' };
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
@@ -19,6 +19,10 @@ export default async (req) => {
       case 'POST /watches': { const w = await read('watches', {}); w[body.deviceId] = body.watches; await write('watches', w); return json({ ok: 1 }); }
       case 'POST /test': { const s = await read('subs', {}); const r = await notify(s, body.deviceId, { title: 'Test alert', body: 'Push alerts are working.' }); if (r.gone) await write('subs', s); return json(r); }
       case 'GET /parallel': return json({ days: await read('parallel', {}), latest: await read('parallelLatest', null), lastError: await read('parallelError', null) });
+      // Fetch Monierate now instead of waiting for the 10:00/14:00 job. Uses one Monierate request.
+      case 'POST /parallel/refresh':
+        try { return json({ ok: true, latest: await pullParallel() }); }
+        catch (e) { await parallelFailed(e); return json({ ok: false, error: e.message }); }
       case 'GET /sync': return json(await read('sync', null));
       case 'POST /sync': {
         const b = body.blob;

@@ -445,6 +445,16 @@ async function editRate(id, d) {
   else return;
   await persist(); render();
 }
+// Ask the server to fetch Monierate now (one request); the server also sends the push alert.
+async function refreshParallel(btn) {
+  if (!state.settings.appKey) return toast('Enter the server key first (Edit settings).');
+  btn.disabled = true; btn.textContent = 'Fetching from Monierate…';
+  try {
+    const r = await api('/api/parallel/refresh', {});
+    await refresh();
+    toast(r.ok ? `Black market rate updated: ₦${N(r.latest.rate)}.` : 'Monierate check failed: ' + r.error);
+  } catch (e) { toast('Could not refresh: ' + e.message); render(); }
+}
 async function setParallel(d) {
   const cur = (state.parallel || {})[d];
   const o = await ask('Black market rate on ' + d, [{ k: 'v', label: '\u20a6 per $1 (enter 0 to go back to the automatic value)', value: cur || '' }]);
@@ -675,7 +685,7 @@ function ratesHTML() {
   const upd = (state.latest ? `<p class="mute">Market rate last updated ${when(state.latest.at)}.</p>` : '') + (pi.latest ? `<p class="mute">Black market (Monierate) last updated ${when(pi.latest.at)}.</p>` : '');
   const bad = pi.lastError && (!pi.latest || pi.lastError.at > pi.latest.at) ? '<p class="note">The latest black market check failed, so the last good value is shown.</p>' : '';
   return hdr('Rates') + (Object.keys(state.rates).length ? '' : '<p class="note">No market rates yet. Enter the server key in Settings to load them.</p>') +
-    `<p class="mute">Market rate in \u20a6 per $1, last 7 days. Change is green with \u25b2 when the rate went up and red with \u25bc when it went down. The black market rate comes from Monierate twice a day. Tap a cell to enter your own rate instead; \u270e marks one you entered.</p><div class="card scroll"><table><tr><th>Date</th><th>Market</th><th>Change</th><th>Black market</th></tr>${body}</table></div>${upd}${bad}`;
+    `<p class="mute">Market rate in \u20a6 per $1, last 7 days. Change is green with \u25b2 when the rate went up and red with \u25bc when it went down. The black market rate comes from Monierate twice a day. Tap a cell to enter your own rate instead; \u270e marks one you entered.</p><div class="card scroll"><table><tr><th>Date</th><th>Market</th><th>Change</th><th>Black market</th></tr>${body}</table></div>${upd}${bad}<button class="ghost wide" onclick="refreshParallel(this)">Refresh black market rate now</button>`;
 }
 function render() {
   let html;
