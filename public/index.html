@@ -68,6 +68,16 @@ table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font
 th{color:var(--mute);font-weight:600;font-size:12.5px}
 th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}th:first-child,td:first-child{text-align:left}
 tr:last-child td{border-bottom:0}
+.replist{padding:4px 14px}
+.rp{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}.rp:last-child{border-bottom:0}
+.rp-main{flex:1;min-width:0}.rp-top{display:flex;align-items:center;gap:8px}
+.rp-sub{color:var(--mute);font-size:13px;font-variant-numeric:tabular-nums;margin-top:2px}
+.rp-naira{font-weight:650;font-variant-numeric:tabular-nums}
+button.link{min-height:0;padding:0;background:none;color:var(--acc);font-weight:600;font-size:14px;text-decoration:underline dotted;text-underline-offset:3px}
+.st-wrap{display:flex;flex-direction:column;align-items:center;gap:4px}
+button.st{min-height:34px;padding:0 14px;font-size:14px;border-radius:11px}
+button.st.paid{background:color-mix(in srgb,var(--safe) 14%,transparent);color:var(--safe)}
+.pend{color:var(--mute);font-size:12px}
 td button{min-height:28px;padding:0 8px;background:transparent;color:var(--ink);border:1px dashed var(--line);border-radius:8px;font-size:14px;font-weight:500}
 dialog{margin:auto auto 0;width:min(100%,520px);max-height:90vh;overflow:auto;border:0;border-radius:26px 26px 0 0;background:var(--card);color:var(--ink);padding:20px 18px calc(18px + env(safe-area-inset-bottom))}
 dialog::backdrop{background:rgba(10,10,30,.5)}
@@ -113,6 +123,8 @@ function fixSchedDates() {
   for (const v of state.vaults) for (const r of (v.repay === 'monthly' && v.sched) || []) {
     const bad = oldAddM(v.start, r.n), good = addM(v.start, r.n);
     if (r.date === bad && bad !== good) { r.date = good; n++; }
+    // Older rows had only an optional "rate you paid". A row with that rate becomes Paid; the rest start as Pending.
+    if (!r.status) { if (r.rate > 0) Object.assign(r, { status: 'paid', paidRate: r.rate, fee: 0, paidOn: r.date }); else r.status = 'pending'; delete r.rate; n++; }
   }
   return n;
 }
@@ -276,7 +288,7 @@ function calc(v) {
   let repay, paidCost = 0, paidUsd = 0;
   if (v.repay === 'monthly' && v.sched && v.sched.length) {
     repay = v.sched.reduce((s, r) => s + r.usd, 0);
-    for (const r of v.sched) if (r.date <= today()) { paidCost += r.usd * rowRate(v, r); paidUsd += r.usd; }
+    for (const r of v.sched) if (r.status === 'paid') { paidCost += (r.usd + (r.fee || 0)) * r.paidRate; paidUsd += r.usd; }
   } else repay = v.loan * (1 + (v.loanRate / 100) * (v.term / 12));
   const remUsd = repay - paidUsd, done = remUsd < 0.005;
   const maxSafe = done ? end / repay : (end - paidCost) / remUsd;
@@ -285,13 +297,15 @@ function calc(v) {
 function mkSched(v, old = []) {
   if (v.repay !== 'monthly') return [];
   const i = v.loanRate / 1200, n = v.term, P = v.payment > 0 ? v.payment : i ? (v.loan * i) / (1 - Math.pow(1 + i, -n)) : v.loan / n;
-  return Array.from({ length: n }, (_, k) => { const o = old[k]; return { n: k + 1, date: (o && o.date) || addM(v.start, k + 1), usd: P, rate: o ? o.rate : null }; });
+  return Array.from({ length: n }, (_, k) => { const o = old[k]; return o ? { ...o, n: k + 1, usd: o.status === 'paid' ? o.usd : P } : { n: k + 1, date: addM(v.start, k + 1), usd: P, status: 'pending' }; });
 }
 function autoRate(v, d) {
   const k = Object.keys(state.rates).sort().filter(x => x <= d).at(-1);
   return k ? (v.edits[k] ?? state.rates[k] + gapFor(v, k)) : null;
 }
-function rowRate(v, r, cur) { return r.rate || (r.date <= today() ? (autoRate(v, r.date) ?? v.entryRate) : (cur ?? null)); }
+// Paid: the rate you paid at. Pending and due date passed: your rate on the due date. Pending and still ahead: today's rate (an estimate).
+function rowRate(v, r, cur) { return r.status === 'paid' ? r.paidRate : r.date <= today() ? (autoRate(v, r.date) ?? cur ?? v.entryRate) : (cur ?? null); }
+const rowNaira = (r, rt) => (rt ? (r.usd + (r.status === 'paid' ? r.fee || 0 : 0)) * rt : null);
 function profitOf(c, cur) { const naira = c.end - (c.paidCost + c.remUsd * cur); return { naira, usd: naira / cur }; }
 const gapFor = (v, d) => { let g = v.gapLog[0].gap; for (const e of v.gapLog) if (e.from <= d) g = e.gap; return g; };
 const rows = v => Object.keys(state.rates).sort().filter(d => d >= v.start).map(d => { const api = state.rates[d], gap = gapFor(v, d), e = v.edits[d]; return { d, api, gap, your: e ?? api + gap, edited: e != null }; });
@@ -323,7 +337,7 @@ let st; const sync = () => { clearTimeout(st); st = setTimeout(syncWatches, 1500
 async function syncWatches() {
   if (!state || !state.settings.appKey) return;
   try {
-    await api('/api/watches', { deviceId: state.deviceId, watches: state.vaults.filter(v => !calc(v).done).map(v => ({ id: v.id, name: v.name, maxSafe: calc(v).maxSafe, margin: v.margin, gap: gapFor(v, today()), dates: [...v.investments.map(i => ({ label: `${i.name} matures`, date: addM(v.start, i.tenor) })), ...(v.repay === 'monthly' ? v.sched.filter(r => r.date > today()).map(r => ({ label: `Repayment ${r.n} of ${v.sched.length}`, date: r.date })) : [{ label: 'Loan repayment', date: addM(v.start, v.term) }])] })) });
+    await api('/api/watches', { deviceId: state.deviceId, watches: state.vaults.filter(v => !calc(v).done).map(v => ({ id: v.id, name: v.name, maxSafe: calc(v).maxSafe, margin: v.margin, gap: gapFor(v, today()), dates: [...v.investments.map(i => ({ label: `${i.name} matures`, date: addM(v.start, i.tenor) })), ...(v.repay === 'monthly' ? v.sched.filter(r => r.status !== 'paid' && r.date >= today()).map(r => ({ label: `Repayment ${r.n} of ${v.sched.length}`, date: r.date })) : [{ label: 'Loan repayment', date: addM(v.start, v.term) }])] })) });
   } catch {}
 }
 async function enablePush() {
@@ -377,11 +391,28 @@ async function editVault(id) {
   v.sched = mkSched(v, v.sched || []);
   await persist(); render();
 }
-async function editInstall(id, n) {
+async function payInstall(id, n) {
+  const v = state.vaults.find(x => x.id === id), r = v.sched.find(x => x.n === n), last = rows(v).at(-1);
+  if (r.status === 'paid') {
+    const c = await pick('Repayment ' + n, `Paid on ${r.paidOn}: $${N(r.usd)} + $${N(r.fee || 0)} fee at \u20a6${N(r.paidRate)} = \u20a6${N(rowNaira(r, r.paidRate), 0)}.`, ['Edit payment', 'Mark as pending', 'Cancel']);
+    if (c === 1) { r.status = 'pending'; delete r.paidRate; delete r.fee; delete r.paidOn; await persist(); render(); }
+    if (c !== 0) return;
+  }
+  const o = await ask(`Pay repayment ${n} of ${v.sched.length} ($${N(r.usd)})`, [
+    { k: 'paidOn', label: 'Date paid', type: 'date', value: r.paidOn || today() },
+    { k: 'paidRate', label: 'Rate you paid at (\u20a6 per $1)', value: r.paidRate || (last ? +last.your.toFixed(2) : v.entryRate) },
+    { k: 'fee', label: 'Fee (USD)', value: r.fee || 0 }], 'Paid');
+  if (!o) return;
+  if (!(o.paidRate > 0)) return toast('Enter the rate you paid at.');
+  if (!(o.fee >= 0)) return toast('The fee cannot be negative.');
+  Object.assign(r, { status: 'paid', paidOn: o.paidOn || today(), paidRate: o.paidRate, fee: o.fee }); await persist(); render();
+  toast(`Repayment ${n} marked as paid.`);
+}
+async function editDue(id, n) {
   const v = state.vaults.find(x => x.id === id), r = v.sched.find(x => x.n === n);
-  const o = await ask('Repayment ' + n, [{ k: 'date', label: 'Due date', type: 'date', value: r.date }, { k: 'rate', label: 'Rate you paid at (\u20a6 per $1). Enter 0 for automatic', value: r.rate || '' }]);
+  const o = await ask('Due date for repayment ' + n, [{ k: 'date', label: 'Due date', type: 'date', value: r.date }]);
   if (!o || !o.date) return;
-  r.date = o.date; r.rate = o.rate > 0 ? o.rate : null; await persist(); render();
+  r.date = o.date; await persist(); render();
 }
 async function delVault(id) {
   if ((await pick('Delete this vault?', 'Its investments and history are removed. This cannot be undone.', ['Delete vault', 'Cancel'])) !== 0) return;
@@ -556,6 +587,7 @@ function listHTML() {
 }
 // Rate history chart: axes with ₦ labels, dates along the bottom, and a tap/drag readout.
 let CH = null;
+const fmtDY = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit', timeZone: 'UTC' });
 const fmtD = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 function chart(rs, c, v) {
   const W = 340, H = 190, L = 46, R = 10, T = 10, B = 24, early = c.maxSafe - v.margin;
@@ -605,10 +637,15 @@ function vaultHTML(v) {
   <div><small>Converted${v.fee > 0 ? ' (after ' + N(v.fee, 2) + '% fee)' : ''}</small><b>₦${N(c.conv, 0)}</b></div>
   ${mo ? `<div><small>Monthly payment</small><b>$${N(v.sched[0] ? v.sched[0].usd : 0)}</b></div>` : `<div><small>Repay by ${addM(v.start, v.term)}</small><b>$${N(c.repay)}</b></div>`}
   <div><small>Naira at the end</small><b>₦${N(c.end, 0)}</b></div>
-  <div><small>${!mo ? "If repaid at today's rate" : c.done ? 'Total profit' : 'Total profit (projected)'}</small><b class="${pr ? (pr.naira >= 0 ? 'safe' : 'losing') : ''}">${pTxt}</b></div>${mo ? `<div><small>Paid so far</small><b>$${N(c.paidUsd)} of $${N(c.repay)}</b></div><div><small>Average rate paid</small><b>${c.paidUsd ? '\u20a6' + N(c.paidCost / c.paidUsd) : '\u2013'}</b></div>` : ''}</div></div></div>`;
+  <div><small>${!mo ? "If repaid at today's rate" : c.done ? 'Total profit' : 'Total profit (projected)'}</small><b class="${pr ? (pr.naira >= 0 ? 'safe' : 'losing') : ''}">${pTxt}</b></div>${mo ? `<div><small>Paid so far</small><b>$${N(c.paidUsd)} of $${N(c.repay)}</b></div><div><small>Average rate paid (incl. fees)</small><b>${c.paidUsd ? '\u20a6' + N(c.paidCost / c.paidUsd) : '\u2013'}</b></div>` : ''}</div></div></div>`;
   const inv = v.investments.map(i => `<div class="card"><div class="row"><b>${esc(i.name)}</b><span><button class="ghost sm" onclick="editInv('${v.id}','${i.id}')">Edit</button> <button class="ghost sm" onclick="delInv('${v.id}','${i.id}')">Remove</button></span></div><p class="mute" style="margin:6px 0 0">₦${N(i.amount, 0)} at ${N(i.gross, 1)}% with ${N(i.tax, 1)}% tax on the gain, ${i.tenor} months. Pays ₦${N(i.amount * (1 + (i.gross / 100) * (1 - i.tax / 100) * (i.tenor / 12)), 0)}.</p></div>`).join('');
   const left = c.conv - c.put;
-  const sch = mo ? `<h2>Repayments</h2><div class="scroll"><table><tr><th>#</th><th>Due</th><th>USD</th><th>Rate</th><th>Naira</th></tr>${v.sched.map(x => { const lock = x.date <= today(), rt = rowRate(v, x, cur); return `<tr><td>${x.n}${lock ? ' \u2713' : ''}</td><td>${x.date}</td><td>${N(x.usd)}</td><td><button onclick="editInstall('${v.id}',${x.n})">${rt ? N(rt) : '\u2013'}${x.rate ? ' \u270e' : ''}${lock ? '' : ' ~'}</button></td><td>${rt ? N(x.usd * rt, 0) : '\u2013'}</td></tr>`; }).join('')}</table></div><p class="mute">\u2713 means the due date has passed, so that day\u2019s rate is locked in. ~ is an estimate at today\u2019s rate. Tap a rate to fix the date or the rate you actually paid.</p>` : '';
+  const sch = mo ? `<h2>Repayments</h2><div class="card replist">${v.sched.map(x => {
+    const paid = x.status === 'paid', rt = rowRate(v, x, cur), est = !paid && x.date > today(), nn = rowNaira(x, rt), t = est ? ' ~' : '';
+    const usd = '$' + N(x.usd) + (paid && x.fee ? ' + $' + N(x.fee) + ' fee' : '');
+    return `<div class="rp"><div class="rp-main"><div class="rp-top"><b>#${x.n}</b><button class="link" onclick="editDue('${v.id}',${x.n})" aria-label="Change due date of repayment ${x.n}">${fmtDY(x.date)}</button></div>
+    <div class="rp-sub">${usd} × ${rt ? '₦' + N(rt) + t : '–'}</div><div class="rp-naira">${nn ? '₦' + N(nn, 0) + t : '–'}</div></div>
+    ${paid ? `<button class="st paid" onclick="payInstall('${v.id}',${x.n})">Paid ✓</button>` : `<div class="st-wrap"><span class="pend">Pending</span><button class="st pay" onclick="payInstall('${v.id}',${x.n})">Pay</button></div>`}</div>`; }).join('')}</div><p class="mute">Paid rows use the rate and fee you entered. A pending row whose due date has passed uses your rate on that day. ~ is an estimate at today’s rate. Tap a date to change it.</p>` : '';
   const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Market</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td class="${sgn(c.maxSafe - x.your)}">${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No rates yet. In Settings, enter the server key to load live rates.</p>';
   return hdr(v.name, true) + stats + (rs.length ? '<h2>Rate history</h2>' + chart(rs, c, v) : '') +
     `<h2>Investments</h2>${inv || '<p class="note">Add the investments this loan is put into.</p>'}${Math.abs(left) > 1 ? `<p class="mute">${left > 0 ? '₦' + N(left, 0) + ' of the converted loan is not invested yet and counts as earning nothing.' : 'Your investments add up to ₦' + N(-left, 0) + ' more than the converted loan.'}</p>` : ''}<button onclick="addInv('${v.id}')">Add investment</button>` +
