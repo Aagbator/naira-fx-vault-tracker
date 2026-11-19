@@ -28,19 +28,22 @@ export async function notify(subs, deviceId, payload) {
   }
 }
 
-async function check(api) {
+// base = latest black market rate (null if none yet). Due-date reminders run either way.
+async function check(base) {
   const [subs, watches, status, sent] = await Promise.all([read('subs', {}), read('watches', {}), read('status', {}), read('sent', {})]);
   let subsChanged = false;
   const send = async (dev, p) => { const r = await notify(subs, dev, p); if (r.gone) subsChanged = true; };
   const live = new Set();
   for (const [dev, list] of Object.entries(watches)) {
     for (const w of list || []) {
-      const your = api + (w.gap || 0), st = statusOf(w, your), key = `${dev}:${w.id}`;
+      const key = `${dev}:${w.id}`;
       live.add(key);
-      if (status[key] && status[key] !== st) {
+      // Only watches sent by the black-market version of the app have a gap measured from the black market rate.
+      const your = base != null && w.base === 'parallel' ? base + (w.gap || 0) : null, st = your == null ? null : statusOf(w, your);
+      if (st && status[key] && status[key] !== st) {
         await send(dev, { title: `${w.name}: ${LABEL[st]}`, body: `Your rate ₦${your.toFixed(2)}. Max safe rate ₦${w.maxSafe.toFixed(2)}. Room left ₦${(w.maxSafe - your).toFixed(2)}.` });
       }
-      status[key] = st;
+      if (st) status[key] = st;
       for (const m of w.dates || []) {
         const days = Math.round((new Date(m.date) - new Date(today())) / 864e5);
         for (const d of [3, 0]) {
@@ -79,6 +82,7 @@ export async function pullParallel() {
   const fmt = n => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const ch = prev ? rate - prev.rate : null;
   const chTxt = ch == null ? '' : ch > 0 ? ` (up ₦${fmt(ch)})` : ch < 0 ? ` (down ₦${fmt(-ch)})` : ' (no change)';
+  await check(rate);
   await notifyAll({ title: `Black market: ₦${fmt(rate)}`, body: `Monierate USD/NGN is ₦${fmt(rate)} per $1${chTxt}.${mkt ? ` Market rate ₦${fmt(mkt.rate)}.` : ''}` });
   return latest;
 }
@@ -100,6 +104,6 @@ export async function pullRate({ alerts = true } = {}) {
   rates[today()] = rate;
   const latest = { rate, at: new Date().toISOString() };
   await Promise.all([write('rates', rates), write('latest', latest)]);
-  if (alerts) await check(rate);
+  if (alerts) { const bm = await read('parallelLatest', null); await check(bm ? bm.rate : null); }
   return latest;
 }

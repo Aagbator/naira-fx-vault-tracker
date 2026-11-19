@@ -120,6 +120,12 @@ const addM = (d, m) => {
 const oldAddM = (d, m) => { const x = new Date(d + 'T12:00:00'); x.setMonth(x.getMonth() + m); return x.toISOString().slice(0, 10); };
 function fixSchedDates() {
   let n = 0;
+  for (const v of state.vaults) if (v.base !== 'parallel') {
+    // Old gaps were measured from the market rate. Re-measure from the black market rate on the start day
+    // (or 0 when there is no black market rate that early). Per-day rates you typed (edits) are kept.
+    const b = bmDays(), k = Object.keys(b).sort().filter(x => x <= v.start).at(-1);
+    v.gapLog = [{ from: v.start, gap: k ? v.entryRate - b[k] : 0 }]; v.base = 'parallel'; n++;
+  }
   for (const v of state.vaults) for (const r of (v.repay === 'monthly' && v.sched) || []) {
     const bad = oldAddM(v.start, r.n), good = addM(v.start, r.n);
     if (r.date === bad && bad !== good) { r.date = good; n++; }
@@ -275,7 +281,7 @@ const HELP = {
   maxSafe: ['Max safe rate', "The highest dollar rate at which you still don't lose money. If the dollar goes above this, you start losing money. With monthly repayments it applies to the payments still to come."],
   early: ['Early warning rate', 'Max safe rate minus your safety margin. You get warned once your rate reaches it.'],
   room: ['Room left', 'How many naira your rate can still rise before it reaches the Max safe rate.'],
-  gap: ['Rate gap', 'The difference between the rate you got and the market rate on day one. Your rate each day is the market rate plus this gap.'],
+  gap: ['Rate gap', 'The difference between the rate you got and the black market rate on day one. Your rate each day is the black market rate plus this gap.'],
   margin: ['Safety margin', 'A cushion in naira, so you are warned before you reach the Max safe rate.'],
 };
 const help = k => pick(HELP[k][0], HELP[k][1], ['Got it']);
@@ -299,16 +305,19 @@ function mkSched(v, old = []) {
   const i = v.loanRate / 1200, n = v.term, P = v.payment > 0 ? v.payment : i ? (v.loan * i) / (1 - Math.pow(1 + i, -n)) : v.loan / n;
   return Array.from({ length: n }, (_, k) => { const o = old[k]; return o ? { ...o, n: k + 1, usd: o.status === 'paid' ? o.usd : P } : { n: k + 1, date: addM(v.start, k + 1), usd: P, status: 'pending' }; });
 }
+// Vaults use the black market rate: the value you typed for a day (Rates tab), else Monierate's.
+const bmDays = () => ({ ...(state.parallelApi || {}), ...(state.parallel || {}) });
+const bmLatest = () => { const b = bmDays(), k = Object.keys(b).sort().at(-1); return k ? b[k] : null; };
 function autoRate(v, d) {
-  const k = Object.keys(state.rates).sort().filter(x => x <= d).at(-1);
-  return k ? (v.edits[k] ?? state.rates[k] + gapFor(v, k)) : null;
+  const b = bmDays(), k = Object.keys(b).sort().filter(x => x <= d).at(-1);
+  return k ? (v.edits[k] ?? b[k] + gapFor(v, k)) : null;
 }
 // Paid: the rate you paid at. Pending and due date passed: your rate on the due date. Pending and still ahead: today's rate (an estimate).
 function rowRate(v, r, cur) { return r.status === 'paid' ? r.paidRate : r.date <= today() ? (autoRate(v, r.date) ?? cur ?? v.entryRate) : (cur ?? null); }
 const rowNaira = (r, rt) => (rt ? (r.usd + (r.status === 'paid' ? r.fee || 0 : 0)) * rt : null);
 function profitOf(c, cur) { const naira = c.end - (c.paidCost + c.remUsd * cur); return { naira, usd: naira / cur }; }
 const gapFor = (v, d) => { let g = v.gapLog[0].gap; for (const e of v.gapLog) if (e.from <= d) g = e.gap; return g; };
-const rows = v => Object.keys(state.rates).sort().filter(d => d >= v.start).map(d => { const api = state.rates[d], gap = gapFor(v, d), e = v.edits[d]; return { d, api, gap, your: e ?? api + gap, edited: e != null }; });
+const rows = v => { const b = bmDays(); return Object.keys(b).sort().filter(d => d >= v.start).map(d => { const api = b[d], gap = gapFor(v, d), e = v.edits[d]; return { d, api, gap, your: e ?? api + gap, edited: e != null }; }); };
 const statusOf = (v, your) => { const c = calc(v), m = c.maxSafe, x = c.done && c.avgPaid ? c.avgPaid : your; return x >= m ? 'losing' : x >= m - v.margin ? 'close' : 'safe'; };
 const BADGE = { safe: 'Safe', close: 'Getting close', losing: 'Losing' };
 const sgn = n => (n > 0 ? 'safe' : n < 0 ? 'losing' : '');
@@ -337,7 +346,7 @@ let st; const sync = () => { clearTimeout(st); st = setTimeout(syncWatches, 1500
 async function syncWatches() {
   if (!state || !state.settings.appKey) return;
   try {
-    await api('/api/watches', { deviceId: state.deviceId, watches: state.vaults.filter(v => !calc(v).done).map(v => ({ id: v.id, name: v.name, maxSafe: calc(v).maxSafe, margin: v.margin, gap: gapFor(v, today()), dates: [...v.investments.map(i => ({ label: `${i.name} matures`, date: addM(v.start, i.tenor) })), ...(v.repay === 'monthly' ? v.sched.filter(r => r.status !== 'paid' && r.date >= today()).map(r => ({ label: `Repayment ${r.n} of ${v.sched.length}`, date: r.date })) : [{ label: 'Loan repayment', date: addM(v.start, v.term) }])] })) });
+    await api('/api/watches', { deviceId: state.deviceId, watches: state.vaults.filter(v => !calc(v).done).map(v => ({ id: v.id, base: 'parallel', name: v.name, maxSafe: calc(v).maxSafe, margin: v.margin, gap: gapFor(v, today()), dates: [...v.investments.map(i => ({ label: `${i.name} matures`, date: addM(v.start, i.tenor) })), ...(v.repay === 'monthly' ? v.sched.filter(r => r.status !== 'paid' && r.date >= today()).map(r => ({ label: `Repayment ${r.n} of ${v.sched.length}`, date: r.date })) : [{ label: 'Loan repayment', date: addM(v.start, v.term) }])] })) });
   } catch {}
 }
 async function enablePush() {
@@ -376,9 +385,9 @@ async function newVault() {
   if (!o || !(o.loan > 0) || !(o.entryRate > 0)) return;
   const rp = await pick('How is the loan repaid?', 'Monthly installments split the loan into equal payments, each converted at that month\u2019s rate.', ['Monthly installments', 'One payment at the end']);
   if (rp < 0) return;
-  let apiNow = state.latest?.rate;
-  if (!apiNow) { toast('No market rate yet, so the rate gap starts at ₦0.'); apiNow = o.entryRate; }
-  const v = { id: crypto.randomUUID(), name: o.name, loan: o.loan, loanRate: o.loanRate, term: o.term, fee: o.fee || 0, payment: o.payment || 0, start: o.start, entryRate: o.entryRate, apiAtSetup: apiNow, margin: state.settings.margin, gapLog: [{ from: o.start, gap: o.entryRate - apiNow }], edits: {}, investments: [], repay: rp === 0 ? 'monthly' : 'yearly' };
+  let apiNow = autoRate({ edits: {}, gapLog: [{ gap: 0 }] }, o.start) ?? bmLatest();
+  if (!apiNow) { toast('No black market rate yet, so the rate gap starts at ₦0.'); apiNow = o.entryRate; }
+  const v = { id: crypto.randomUUID(), name: o.name, loan: o.loan, loanRate: o.loanRate, term: o.term, fee: o.fee || 0, payment: o.payment || 0, start: o.start, entryRate: o.entryRate, apiAtSetup: apiNow, margin: state.settings.margin, gapLog: [{ from: o.start, gap: o.entryRate - apiNow }], edits: {}, investments: [], repay: rp === 0 ? 'monthly' : 'yearly', base: 'parallel' };
   v.sched = mkSched(v);
   state.vaults.push(v); await persist(); nav('vault', v.id);
 }
@@ -435,10 +444,10 @@ async function delInv(id, iid) {
 }
 async function editRate(id, d) {
   const v = state.vaults.find(x => x.id === id), r = rows(v).find(x => x.d === d);
-  const o = await ask('Your rate on ' + d, [{ k: 'val', label: `Your rate (₦ per $1). Market rate that day: ${N(r.api)}`, value: r.your }]);
+  const o = await ask('Your rate on ' + d, [{ k: 'val', label: `Your rate (₦ per $1). Black market rate that day: ${N(r.api)}`, value: r.your }]);
   if (!o || !(o.val > 0)) return;
   const opts = ['This day only', 'This day and onwards', 'Cancel']; if (r.edited) opts.splice(2, 0, 'Reset to automatic');
-  const c = await pick('Apply the new rate', `Your rate ${N(o.val)} means a gap of ₦${N(o.val - r.api)} from the market rate.`, opts);
+  const c = await pick('Apply the new rate', `Your rate ${N(o.val)} means a gap of ₦${N(o.val - r.api)} from the black market rate.`, opts);
   if (c === 0) v.edits[d] = o.val;
   else if (c === 1) { delete v.edits[d]; v.gapLog = v.gapLog.filter(e => e.from < d); v.gapLog.push({ from: d, gap: o.val - r.api }); }
   else if (r.edited && c === 2) delete v.edits[d];
@@ -618,10 +627,10 @@ function chart(rs, c, v) {
   const pl = k => rs.map((r, i) => `${x(i).toFixed(1)},${y(r[k]).toFixed(1)}`).join(' ');
   const dots = n <= 40 ? rs.map((r, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(r.your).toFixed(1)}" r="2.2" fill="var(--acc)"/>`).join('') : '';
   CH = { rs, c, W, n, L, R, x, y };
-  return `<div class="card chart-card"><p class="chart-date" id="chD"></p><div class="chart-read"><div><small>Market</small><b id="chA"></b></div><div><small>Yours</small><b id="chY"></b></div><div><small>Room left</small><b id="chR"></b></div></div>
+  return `<div class="card chart-card"><p class="chart-date" id="chD"></p><div class="chart-read"><div><small>Black market</small><b id="chA"></b></div><div><small>Yours</small><b id="chY"></b></div><div><small>Room left</small><b id="chR"></b></div></div>
   <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Rate history. Tap or drag to see each day." onpointerdown="chartPick(event)" onpointermove="chartPick(event)">${grid}${hl(c.maxSafe, 'ms')}${hl(early, 'ew')}<polyline class="la" points="${pl('api')}"/><polyline class="ly" points="${pl('your')}"/>${dots}
   <line id="chL" class="cur" y1="${T}" y2="${H - B}"/><circle id="chCa" r="4" fill="var(--mute)" stroke="var(--card)" stroke-width="2"/><circle id="chCy" r="5" fill="var(--acc)" stroke="var(--card)" stroke-width="2"/>${xl}</svg>
-  <div class="legend"><span><i style="border-color:var(--mute)"></i>Market rate</span><span><i style="border-color:var(--acc)"></i>Your rate</span><span><i class="d" style="border-color:var(--loss)"></i>Max safe ₦${N(c.maxSafe)}</span><span><i class="d" style="border-color:var(--warn)"></i>Early warning ₦${N(early)}</span></div>
+  <div class="legend"><span><i style="border-color:var(--mute)"></i>Black market rate</span><span><i style="border-color:var(--acc)"></i>Your rate</span><span><i class="d" style="border-color:var(--loss)"></i>Max safe ₦${N(c.maxSafe)}</span><span><i class="d" style="border-color:var(--warn)"></i>Early warning ₦${N(early)}</span></div>
   <p class="mute" style="margin:8px 4px 0;font-size:12.5px">Tap or drag across the chart to see any day.</p></div>`;
 }
 function chartShow(i) {
@@ -662,7 +671,7 @@ function vaultHTML(v) {
     return `<div class="rp"><div class="rp-main"><div class="rp-top"><b>#${x.n}</b><button class="link" onclick="editDue('${v.id}',${x.n})" aria-label="Change due date of repayment ${x.n}">${fmtDY(x.date)}</button></div>
     <div class="rp-sub">${usd} × ${rt ? '₦' + N(rt) + t : '–'}</div><div class="rp-naira">${nn ? '₦' + N(nn, 0) + t : '–'}</div></div>
     ${paid ? `<button class="st paid" onclick="payInstall('${v.id}',${x.n})">Paid ✓</button>` : `<div class="st-wrap"><span class="pend">Pending</span><button class="st pay" onclick="payInstall('${v.id}',${x.n})">Pay</button></div>`}</div>`; }).join('')}</div><p class="mute">Paid rows use the rate and fee you entered. A pending row whose due date has passed uses your rate on that day. ~ is an estimate at today’s rate. Tap a date to change it.</p>` : '';
-  const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Market</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td class="${sgn(c.maxSafe - x.your)}">${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No rates yet. In Settings, enter the server key to load live rates.</p>';
+  const table = rs.length ? `<div class="scroll"><table><tr><th>Date</th><th>Black mkt</th><th>Yours</th><th>Room left</th><th>Status</th></tr>${[...rs].reverse().map(x => `<tr><td>${x.d}</td><td>${N(x.api)}</td><td><button onclick="editRate('${v.id}','${x.d}')">${N(x.your)}${x.edited ? ' ✎' : ''}</button></td><td class="${sgn(c.maxSafe - x.your)}">${N(c.maxSafe - x.your)}</td><td class="${statusOf(v, x.your)}">${BADGE[statusOf(v, x.your)]}</td></tr>`).join('')}</table></div>` : '<p class="note">No black market rates yet. They load from Monierate at 10:00 and 14:00, or tap Refresh on the Rates tab. You can also type a rate for a day there.</p>';
   return hdr(v.name, true) + stats + (rs.length ? '<h2>Rate history</h2>' + chart(rs, c, v) : '') +
     `<h2>Investments</h2>${inv || '<p class="note">Add the investments this loan is put into.</p>'}${Math.abs(left) > 1 ? `<p class="mute">${left > 0 ? '₦' + N(left, 0) + ' of the converted loan is not invested yet and counts as earning nothing.' : 'Your investments add up to ₦' + N(-left, 0) + ' more than the converted loan.'}</p>` : ''}<button onclick="addInv('${v.id}')">Add investment</button>` +
     `${sch}<h2>Daily history</h2>${table}<h2>Vault</h2><div class="row"><button class="ghost" onclick="editVault('${v.id}')">Edit vault</button><button class="ghost" onclick="delVault('${v.id}')">Delete vault</button></div>`;

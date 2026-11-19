@@ -17,7 +17,7 @@ Live USD/NGN market rate, Monierate black market rate, daily history, Max safe r
 Dragging the folder into Netlify's drop zone will not install the function packages. Use the GitHub import or `netlify deploy --prod`.
 
 ## Scheduled jobs (UTC cron)
-- `pull-rate`: market rate every 30 minutes, then checks every vault and sends alerts. If your plan limits scheduled-function frequency, change it to `@hourly` in `netlify/functions/pull-rate.mjs`.
+- `pull-rate`: market rate every 30 minutes (shown on the Rates tab only), then checks every vault and sends alerts using the latest black market rate. If your plan limits scheduled-function frequency, change it to `@hourly` in `netlify/functions/pull-rate.mjs`.
 - `pull-parallel`: Monierate parallel (black market) rate at 09:00 and 13:00 UTC, which is 10:00 and 14:00 in Lagos. That is about 60 requests a month. A rate that looks wrong next to the market rate (under 70% or over 150% of it) is rejected, and the last good value is kept and marked as old in the app.
 Scheduled functions only run on the published production deploy.
 
@@ -35,6 +35,7 @@ Scheduled functions only run on the published production deploy.
 - To use an existing online copy on a device that already has its own data, install fresh and choose Sync from another device.
 
 ## Good to know
+- Vaults use the black market rate: your rate each day is the black market rate plus the vault's rate gap, and Max safe, Room left, status, profit, repayments and alerts all use it. A rate you type on the Rates tab for a day replaces Monierate's for that day.
 - Black market column: Monierate's value shows by default. Tap a cell to enter your own rate (marked ✎); enter 0 to go back to the automatic value. Monierate's parallel figure is an aggregate and can differ from the aboki dealer rate on their website, so compare them for a few days.
 - Colours: green means positive and red means negative everywhere. Safe, Getting close and Losing keep green, amber and red.
 - History starts the day the first rate is saved. Older days are not back-filled.
